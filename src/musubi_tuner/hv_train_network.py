@@ -1053,6 +1053,36 @@ class NetworkTrainer:
         else:
             save_videos_grid(video, os.path.join(save_dir, save_path) + ".mp4")
 
+        # Log to wandb if available
+        try:
+            wandb_tracker = accelerator.get_tracker("wandb")
+            try:
+                import wandb
+            except ImportError:
+                raise ImportError("No wandb / wandb がインストールされていないようです")
+            
+            if video.shape[2] == 1:
+                # For single frame (image), extract the image and log
+                # video shape is [batch, channels, frames, height, width]
+                # Convert from tensor to PIL Image
+                image_tensor = video[0, :, 0, :, :]  # [C, H, W]
+                if image_tensor.shape[0] == 3:
+                    # RGB image
+                    image_array = image_tensor.permute(1, 2, 0).cpu().numpy()
+                    image_array = (image_array * 255).astype(np.uint8)
+                    from PIL import Image
+                    pil_image = Image.fromarray(image_array)
+                    wandb_tracker.log({f"sample_{prompt_idx}": wandb.Image(pil_image)}, step=steps)
+            else:
+                # For video, we need to save it to a temporary file first
+                # wandb.Video expects a file path
+                video_path = os.path.join(save_dir, save_path) + ".mp4"
+                if os.path.exists(video_path):
+                    wandb_tracker.log({f"sample_{prompt_idx}": wandb.Video(video_path)}, step=steps)
+        except Exception as e:
+            # wandb not available or other error - just continue
+            pass
+
         # Move models back to initial state
         vae.to("cpu")
         clean_memory_on_device(device)
