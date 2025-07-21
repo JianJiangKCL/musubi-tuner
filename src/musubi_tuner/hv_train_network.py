@@ -1048,40 +1048,27 @@ class NetworkTrainer:
         save_path = (
             f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{prompt_idx:02d}_{ts_str}{seed_suffix}"
         )
-        if video.shape[2] == 1:
-            save_images_grid(video, save_dir, save_path, create_subdir=False)
-        else:
-            save_videos_grid(video, os.path.join(save_dir, save_path) + ".mp4")
 
-        # Log to wandb if available
+        wandb_tracker = None
         try:
             wandb_tracker = accelerator.get_tracker("wandb")
             try:
                 import wandb
             except ImportError:
                 raise ImportError("No wandb / wandb がインストールされていないようです")
-            
-            if video.shape[2] == 1:
-                # For single frame (image), extract the image and log
-                # video shape is [batch, channels, frames, height, width]
-                # Convert from tensor to PIL Image
-                image_tensor = video[0, :, 0, :, :]  # [C, H, W]
-                if image_tensor.shape[0] == 3:
-                    # RGB image
-                    image_array = image_tensor.permute(1, 2, 0).cpu().numpy()
-                    image_array = (image_array * 255).astype(np.uint8)
-                    from PIL import Image
-                    pil_image = Image.fromarray(image_array)
-                    wandb_tracker.log({f"sample_{prompt_idx}": wandb.Image(pil_image)}, step=steps)
-            else:
-                # For video, we need to save it to a temporary file first
-                # wandb.Video expects a file path
-                video_path = os.path.join(save_dir, save_path) + ".mp4"
-                if os.path.exists(video_path):
-                    wandb_tracker.log({f"sample_{prompt_idx}": wandb.Video(video_path)}, step=steps)
-        except Exception as e:
-            # wandb not available or other error - just continue
+        except:  # wandb 無効時
             pass
+
+        if video.shape[2] == 1:
+            image_paths = save_images_grid(video, save_dir, save_path, create_subdir=False)
+            if wandb_tracker is not None:
+                for image_path in image_paths:
+                    wandb_tracker.log({f"sample_{prompt_idx}": wandb.Image(image_path)}, step=steps)
+        else:
+            video_path = os.path.join(save_dir, save_path) + ".mp4"
+            save_videos_grid(video, video_path)
+            if wandb_tracker is not None:
+                wandb_tracker.log({f"sample_{prompt_idx}": wandb.Video(video_path)}, step=steps)
 
         # Move models back to initial state
         vae.to("cpu")
