@@ -15,15 +15,11 @@ import torch
 from safetensors.torch import load_file, save_file
 from safetensors import safe_open
 from PIL import Image
-import cv2
 import numpy as np
-import torchvision.transforms.functional as TF
-from transformers import LlamaModel
 from tqdm import tqdm
 
 from musubi_tuner.flux import flux_utils
 from musubi_tuner.flux.flux_utils import load_flow_model
-from musubi_tuner.networks import lora_framepack
 from musubi_tuner.flux import flux_models
 from musubi_tuner.dataset import image_video_dataset
 
@@ -32,8 +28,9 @@ try:
 except:
     pass
 
+from musubi_tuner.networks import lora_flux
 from musubi_tuner.utils.device_utils import clean_memory_on_device
-from musubi_tuner.hv_generate_video import get_time_flag, save_images_grid, save_videos_grid, synchronize_device
+from musubi_tuner.hv_generate_video import get_time_flag, save_images_grid, synchronize_device
 from musubi_tuner.wan_generate_video import merge_lora_weights
 
 import logging
@@ -63,22 +60,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text_encoder1", type=str, required=True, help="Text Encoder 1 (T5) directory or path")
     parser.add_argument("--text_encoder2", type=str, required=True, help="Text Encoder 2 (CLIP-L) directory or path")
 
-    # # LoRA
-    # parser.add_argument("--lora_weight", type=str, nargs="*", required=False, default=None, help="LoRA weight path")
-    # parser.add_argument("--lora_multiplier", type=float, nargs="*", default=1.0, help="LoRA multiplier")
-    # parser.add_argument("--include_patterns", type=str, nargs="*", default=None, help="LoRA module include patterns")
-    # parser.add_argument("--exclude_patterns", type=str, nargs="*", default=None, help="LoRA module exclude patterns")
-    # parser.add_argument(
-    #     "--save_merged_model",
-    #     type=str,
-    #     default=None,
-    #     help="Save merged model to path. If specified, no inference will be performed.",
-    # )
+    # LoRA
+    parser.add_argument("--lora_weight", type=str, nargs="*", required=False, default=None, help="LoRA weight path")
+    parser.add_argument("--lora_multiplier", type=float, nargs="*", default=1.0, help="LoRA multiplier")
+    parser.add_argument("--include_patterns", type=str, nargs="*", default=None, help="LoRA module include patterns")
+    parser.add_argument("--exclude_patterns", type=str, nargs="*", default=None, help="LoRA module exclude patterns")
+    parser.add_argument(
+        "--save_merged_model",
+        type=str,
+        default=None,
+        help="Save merged model to path. If specified, no inference will be performed.",
+    )
 
     # inference
     parser.add_argument("--prompt", type=str, default=None, help="prompt for generation")
     parser.add_argument("--image_size", type=int, nargs=2, default=[256, 256], help="image size, height and width")
     parser.add_argument("--control_image_path", type=str, default=None, help="path to control (reference) image for Kontext.")
+    parser.add_argument("--no_resize_control", action="store_true", help="do not resize control image")
     parser.add_argument("--infer_steps", type=int, default=25, help="number of inference steps, default is 25")
     parser.add_argument("--save_path", type=str, required=True, help="path to save generated video")
     parser.add_argument("--seed", type=int, default=None, help="Seed for evaluation.")
@@ -86,7 +84,7 @@ def parse_args() -> argparse.Namespace:
     #     "--cpu_noise", action="store_true", help="Use CPU to generate noise (compatible with ComfyUI). Default is False."
     # )
     parser.add_argument(
-        "--embedded_cfg_scale", type=float, default=4.0, help="Embeded CFG scale (distilled CFG Scale), default is 4.0"
+        "--embedded_cfg_scale", type=float, default=2.5, help="Embeded CFG scale (distilled CFG Scale), default is 2.5"
     )
     # parser.add_argument("--video_path", type=str, default=None, help="path to video for video2video inference")
     # parser.add_argument(
@@ -129,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no_metadata", action="store_true", help="do not save metadata")
     parser.add_argument("--latent_path", type=str, nargs="*", default=None, help="path to latent for decode. no inference")
-    # parser.add_argument("--lycoris", action="store_true", help="use lycoris for inference")
+    parser.add_argument("--lycoris", action="store_true", help="use lycoris for inference")
     # parser.add_argument("--compile", action="store_true", help="Enable torch.compile")
     # parser.add_argument(
     #     "--compile_args",
@@ -263,7 +261,7 @@ def load_dit_model(args: argparse.Namespace, device: torch.device) -> flux_model
         flux_models.Flux: DiT model
     """
     loading_device = "cpu"
-    if args.blocks_to_swap == 0 and not args.fp8_scaled:  # and args.lora_weight is None:
+    if args.blocks_to_swap == 0 and not args.fp8_scaled and args.lora_weight is None:
         loading_device = device
 
     # do not fp8 optimize because we will merge LoRA weights
@@ -364,41 +362,16 @@ def decode_latent(ae: flux_models.AutoEncoder, latent: torch.Tensor, device: tor
 def prepare_image_inputs(args: argparse.Namespace, device: torch.device, ae: flux_models.AutoEncoder) -> Dict[str, Any]:
     """Prepare image-related inputs for Kontext: AE encoding."""
 
-    # prepare image
-    def preprocess_image(image: Image, w: int, h: int) -> Tuple[torch.Tensor, np.ndarray, Optional[np.ndarray]]:
-        if image.mode == "RGBA":
-            alpha = image.split()[-1]
-        else:
-            alpha = None
-        image = image.convert("RGB")
-
-        image_np = np.array(image)  # PIL to numpy, HWC
-
-        image_np = image_video_dataset.resize_image_to_bucket(image_np, (w, h))
-        image_tensor = torch.from_numpy(image_np).float() / 127.5 - 1.0  # -1 to 1.0, HWC
-        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)  # HWC -> CHW -> NCHW, N=1
-        return image_tensor, image_np, alpha
+    from musubi_tuner.utils.image_utils import preprocess_image
 
     if args.control_image_path is not None:
-        # find appropriate bucket for the image size. reference: https://github.com/black-forest-labs/flux/blob/main/src/flux/sampling.py
-        control_image = Image.open(args.control_image_path)
-        width, height = control_image.size
-        aspect_ratio = width / height
-
-        # Kontext is trained on specific resolutions, using one of them is recommended
-        _, bucket_width, bucket_height = min((abs(aspect_ratio - w / h), w, h) for w, h in flux_utils.PREFERED_KONTEXT_RESOLUTIONS)
-        control_latent_width = int(bucket_width / 16)
-        control_latent_height = int(bucket_height / 16)
-        bucket_width = control_latent_width * 16
-        bucket_height = control_latent_height * 16
-        control_image_tensor, _, _ = preprocess_image(control_image, bucket_width, bucket_height)
+        control_image_tensor, _, _ = flux_utils.preprocess_control_image(args.control_image_path, not args.no_resize_control)
 
         # AE encoding
         logger.info(f"Encoding control image to latent space with AE")
         ae_original_device = ae.device
         ae.to(device)
 
-        # control_latent = hunyuan.vae_encode(control_image_tensor.to(device), vae).cpu()
         with torch.no_grad():
             control_latent = ae.encode(control_image_tensor.to(device, dtype=ae.dtype))
         control_latent = control_latent.to(torch.bfloat16).to("cpu")
@@ -596,14 +569,14 @@ def generate(
         # load DiT model
         model = load_dit_model(args, device)
 
-        # # merge LoRA weights
-        # if args.lora_weight is not None and len(args.lora_weight) > 0:
-        #     # ugly hack to common merge_lora_weights function
-        #     merge_lora_weights(lora_framepack, model, args, device, convert_lora_for_framepack)
+        # merge LoRA weights
+        if args.lora_weight is not None and len(args.lora_weight) > 0:
+            # ugly hack to common merge_lora_weights function
+            merge_lora_weights(lora_flux, model, args, device)
 
-        #     # if we only want to save the model, we can skip the rest
-        #     if args.save_merged_model:
-        #         return None, None
+            # if we only want to save the model, we can skip the rest
+            if args.save_merged_model:
+                return None, None
 
         # optimize model: fp8 conversion, block swap etc.
         optimize_model(model, args, device)
@@ -677,7 +650,7 @@ def generate(
     guidance = args.embedded_cfg_scale
     x = noise
 
-    logger.info(f"guidance: {guidance}, timesteps: {timesteps}")
+    # logger.info(f"guidance: {guidance}, timesteps: {timesteps}")
     guidance_vec = torch.full((x.shape[0],), guidance, device=x.device, dtype=x.dtype)
 
     for t_curr, t_prev in zip(tqdm(timesteps[:-1]), timesteps[1:]):
@@ -948,14 +921,16 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
     # Use args from the first prompt for DiT loading (LoRA etc. should be consistent for a batch)
     first_prompt_args = all_prompt_args_list[0]
     dit_model = load_dit_model(first_prompt_args, device)  # Load directly to target device if possible
-    # if first_prompt_args.lora_weight is not None and len(first_prompt_args.lora_weight) > 0:
-    #     logger.info("Merging LoRA weights into DiT model...")
-    #     merge_lora_weights(lora_framepack, dit_model, first_prompt_args, device, convert_lora_for_framepack)
-    #     if first_prompt_args.save_merged_model:
-    #         logger.info("Merged DiT model saved. Skipping generation.")
-    #         del dit_model
-    #         clean_memory_on_device(device)
-    #         return
+
+    if first_prompt_args.lora_weight is not None and len(first_prompt_args.lora_weight) > 0:
+        logger.info("Merging LoRA weights into DiT model...")
+        merge_lora_weights(lora_flux, dit_model, first_prompt_args, device)
+        if first_prompt_args.save_merged_model:
+            logger.info("Merged DiT model saved. Skipping generation.")
+            del dit_model
+            clean_memory_on_device(device)
+            return
+
     logger.info("Optimizing DiT model...")
     optimize_model(dit_model, first_prompt_args, device)  # Handles device placement, fp8 etc.
 

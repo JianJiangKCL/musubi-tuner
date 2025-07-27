@@ -423,6 +423,7 @@ def attention(
     attn_mask: Optional[Tensor] = None,
     attn_mode: str = "torch",
     split_attn: bool = False,
+    control_lengths: Optional[list[int]] = None,
 ) -> Tensor:
     assert attn_mask is None, "attn_mask is not supported in flux attention"
 
@@ -431,15 +432,30 @@ def attention(
     # x = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
     # x = rearrange(x, "B H L D -> B L (H D)")
 
-    if split_attn:
-        total_len = [q.shape[-2]] * q.shape[0]  # (sequence length, sequence length ...)
+    if control_lengths is not None:
+        max_control_length = max(control_lengths)
+        min_control_length = min(control_lengths)
     else:
+        max_control_length = 0
+        min_control_length = 0
+
+    if split_attn or max_control_length != min_control_length:
+        if control_lengths is None or max_control_length == min_control_length:
+            # normal split attention, no trimming
+            total_len = torch.tensor([q.shape[-2]] * q.shape[0], dtype=torch.long)  # (sequence length, sequence length ...)
+        else:
+            # split attention with different control lengths, trim to each control length
+            max_control_length = max(control_lengths)
+            total_len = torch.tensor([q.shape[-2] - max_control_length + cl for cl in control_lengths], dtype=torch.long)
+        # print(f"Max control length: {max_control_length}, control lengths: {control_lengths}, total_len: {total_len}")
+    else:
+        # inference time or same length for all controls
         total_len = None
-    
+
     q = q.transpose(1, 2)  # B, H, L, D -> B, L, H, D
     k = k.transpose(1, 2)  # B, H, L, D -> B, L, H, D
     v = v.transpose(1, 2)  # B, H, L, D -> B, L, H, D
-    x = hunyuan_attention([q, k, v], mode=attn_mode, total_len=total_len) # B, L, D
+    x = hunyuan_attention([q, k, v], mode=attn_mode, total_len=total_len)  # B, L, D
 
     return x
 
@@ -466,31 +482,6 @@ def apply_rope(xq: Tensor, xk: Tensor, freqs_cis: Tensor) -> tuple[Tensor, Tenso
 
 
 # region layers
-
-
-# for cpu_offload_checkpointing
-
-
-def to_cuda(x):
-    if isinstance(x, torch.Tensor):
-        return x.cuda()
-    elif isinstance(x, (list, tuple)):
-        return [to_cuda(elem) for elem in x]
-    elif isinstance(x, dict):
-        return {k: to_cuda(v) for k, v in x.items()}
-    else:
-        return x
-
-
-def to_cpu(x):
-    if isinstance(x, torch.Tensor):
-        return x.cpu()
-    elif isinstance(x, (list, tuple)):
-        return [to_cpu(elem) for elem in x]
-    elif isinstance(x, dict):
-        return {k: to_cpu(v) for k, v in x.items()}
-    else:
-        return x
 
 
 class EmbedND(nn.Module):
@@ -676,18 +667,15 @@ class DoubleStreamBlock(nn.Module):
         )
 
         self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
 
-    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
+    def enable_gradient_checkpointing(self):
         self.gradient_checkpointing = True
-        self.cpu_offload_checkpointing = cpu_offload
 
     def disable_gradient_checkpointing(self):
         self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
 
     def _forward(
-        self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, txt_attention_mask: Optional[Tensor] = None
+        self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, control_lengths: Optional[list[int]] = None
     ) -> tuple[Tensor, Tensor]:
         img_mod1, img_mod2 = self.img_mod(vec)
         txt_mod1, txt_mod2 = self.txt_mod(vec)
@@ -712,7 +700,7 @@ class DoubleStreamBlock(nn.Module):
         v = torch.cat((txt_v, img_v), dim=2)
 
         # attention mask is not supported in flux
-        attn = attention(q, k, v, pe=pe, attn_mode=self.attn_mode, split_attn=self.split_attn)
+        attn = attention(q, k, v, pe=pe, attn_mode=self.attn_mode, split_attn=self.split_attn, control_lengths=control_lengths)
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
 
         # calculate the img blocks
@@ -725,27 +713,12 @@ class DoubleStreamBlock(nn.Module):
         return img, txt
 
     def forward(
-        self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, txt_attention_mask: Optional[Tensor] = None
+        self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, control_lengths: Optional[list[int]] = None
     ) -> tuple[Tensor, Tensor]:
         if self.training and self.gradient_checkpointing:
-            if not self.cpu_offload_checkpointing:
-                return checkpoint(self._forward, img, txt, vec, pe, txt_attention_mask, use_reentrant=False)
-            # cpu offload checkpointing
-
-            def create_custom_forward(func):
-                def custom_forward(*inputs):
-                    cuda_inputs = to_cuda(inputs)
-                    outputs = func(*cuda_inputs)
-                    return to_cpu(outputs)
-
-                return custom_forward
-
-            return torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self._forward), img, txt, vec, pe, txt_attention_mask, use_reentrant=False
-            )
-
+            return checkpoint(self._forward, img, txt, vec, pe, control_lengths, use_reentrant=False)
         else:
-            return self._forward(img, txt, vec, pe, txt_attention_mask)
+            return self._forward(img, txt, vec, pe, control_lengths)
 
 
 class SingleStreamBlock(nn.Module):
@@ -786,17 +759,14 @@ class SingleStreamBlock(nn.Module):
         self.modulation = Modulation(hidden_size, double=False)
 
         self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
 
-    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
+    def enable_gradient_checkpointing(self):
         self.gradient_checkpointing = True
-        self.cpu_offload_checkpointing = cpu_offload
 
     def disable_gradient_checkpointing(self):
         self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
 
-    def _forward(self, x: Tensor, vec: Tensor, pe: Tensor, txt_attention_mask: Optional[Tensor] = None) -> Tensor:
+    def _forward(self, x: Tensor, vec: Tensor, pe: Tensor, control_lengths: Optional[list[int]] = None) -> Tensor:
         mod, _ = self.modulation(vec)
         x_mod = (1 + mod.scale) * self.pre_norm(x) + mod.shift
         qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1)
@@ -805,32 +775,17 @@ class SingleStreamBlock(nn.Module):
         q, k = self.norm(q, k, v)
 
         # compute attention
-        attn = attention(q, k, v, pe=pe, attn_mode=self.attn_mode, split_attn=self.split_attn)
+        attn = attention(q, k, v, pe=pe, attn_mode=self.attn_mode, split_attn=self.split_attn, control_lengths=control_lengths)
 
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
         return x + mod.gate * output
 
-    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, txt_attention_mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, control_lengths: Optional[list[int]] = None) -> Tensor:
         if self.training and self.gradient_checkpointing:
-            if not self.cpu_offload_checkpointing:
-                return checkpoint(self._forward, x, vec, pe, txt_attention_mask, use_reentrant=False)
-
-            # cpu offload checkpointing
-
-            def create_custom_forward(func):
-                def custom_forward(*inputs):
-                    cuda_inputs = to_cuda(inputs)
-                    outputs = func(*cuda_inputs)
-                    return to_cpu(outputs)
-
-                return custom_forward
-
-            return torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self._forward), x, vec, pe, txt_attention_mask, use_reentrant=False
-            )
+            return checkpoint(self._forward, x, vec, pe, control_lengths, use_reentrant=False)
         else:
-            return self._forward(x, vec, pe, txt_attention_mask)
+            return self._forward(x, vec, pe, control_lengths)
 
 
 class LastLayer(nn.Module):
@@ -927,6 +882,36 @@ class Flux(nn.Module):
     def dtype(self):
         return next(self.parameters()).dtype
 
+    def fp8_optimization(
+        self, state_dict: dict[str, torch.Tensor], device: torch.device, move_to_device: bool, use_scaled_mm: bool = False
+    ) -> int:
+        """
+        Optimize the model state_dict with fp8.
+
+        Args:
+            state_dict (dict[str, torch.Tensor]):
+                The state_dict of the model.
+            device (torch.device):
+                The device to calculate the weight.
+            move_to_device (bool):
+                Whether to move the weight to the device after optimization.
+        """
+        TARGET_KEYS = ["single_blocks", "double_blocks"]
+        EXCLUDE_KEYS = [
+            "norm",
+            "mod",
+        ]
+
+        from musubi_tuner.modules.fp8_optimization_utils import apply_fp8_monkey_patch, optimize_state_dict_with_fp8
+
+        # inplace optimization
+        state_dict = optimize_state_dict_with_fp8(state_dict, device, TARGET_KEYS, EXCLUDE_KEYS, move_to_device=move_to_device)
+
+        # apply monkey patching
+        apply_fp8_monkey_patch(self, state_dict, use_scaled_mm=use_scaled_mm)
+
+        return state_dict
+
     def enable_gradient_checkpointing(self):
         self.gradient_checkpointing = True
 
@@ -1016,6 +1001,7 @@ class Flux(nn.Module):
         timesteps: Tensor,
         y: Tensor,
         guidance: Tensor | None = None,
+        control_lengths: Optional[list[int]] = None,
     ) -> Tensor:
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
@@ -1033,28 +1019,24 @@ class Flux(nn.Module):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
 
-        if not self.blocks_to_swap:
-            for block_idx, block in enumerate(self.double_blocks):
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
-
-            img = torch.cat((txt, img), 1)
-            for block_idx, block in enumerate(self.single_blocks):
-                img = block(img, vec=vec, pe=pe)
-        else:
-            for block_idx, block in enumerate(self.double_blocks):
+        for block_idx, block in enumerate(self.double_blocks):
+            if self.blocks_to_swap:
                 self.offloader_double.wait_for_block(block_idx)
 
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
+            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, control_lengths=control_lengths)
 
+            if self.blocks_to_swap:
                 self.offloader_double.submit_move_blocks(self.double_blocks, block_idx)
 
-            img = torch.cat((txt, img), 1)
+        img = torch.cat((txt, img), 1)
 
-            for block_idx, block in enumerate(self.single_blocks):
+        for block_idx, block in enumerate(self.single_blocks):
+            if self.blocks_to_swap:
                 self.offloader_single.wait_for_block(block_idx)
 
-                img = block(img, vec=vec, pe=pe)
+            img = block(img, vec=vec, pe=pe, control_lengths=control_lengths)
 
+            if self.blocks_to_swap:
                 self.offloader_single.submit_move_blocks(self.single_blocks, block_idx)
 
         img = img[:, txt.shape[1] :, ...]

@@ -1,13 +1,17 @@
 import json
 import math
+from PIL import Image
 from typing import Callable, Optional, Union
 import einops
+import numpy as np
 import torch
 from transformers import CLIPConfig, CLIPTextModel, T5Config, T5EncoderModel, CLIPTokenizer, T5Tokenizer
 from accelerate import init_empty_weights
 
 from musubi_tuner.flux import flux_models
+from musubi_tuner.utils import image_utils
 from musubi_tuner.utils.safetensors_utils import load_safetensors
+from musubi_tuner.utils.train_utils import get_lin_function
 
 import logging
 
@@ -40,6 +44,39 @@ PREFERED_KONTEXT_RESOLUTIONS = [
 ]
 
 
+def preprocess_control_image(
+    control_image_path: str, resize_to_prefered: bool = True
+) -> tuple[torch.Tensor, np.ndarray, Optional[np.ndarray]]:
+    """
+    Preprocess the control image for the model. See `preprocess_image` for details.
+    Args:
+        control_image_path (str): Path to the control image.
+    Returns:
+        Tuple[torch.Tensor, np.ndarray, Optional[np.ndarray]]: same as `preprocess_image`.
+    """
+    # find appropriate bucket for the image size. reference: https://github.com/black-forest-labs/flux/blob/main/src/flux/sampling.py
+    control_image = Image.open(control_image_path)
+    width, height = control_image.size
+    aspect_ratio = width / height
+
+    if resize_to_prefered:
+        # Kontext is trained on specific resolutions, using one of them is recommended
+        _, bucket_width, bucket_height = min((abs(aspect_ratio - w / h), w, h) for w, h in PREFERED_KONTEXT_RESOLUTIONS)
+        control_latent_width = int(bucket_width / 16)
+        control_latent_height = int(bucket_height / 16)
+        bucket_width = control_latent_width * 16
+        bucket_height = control_latent_height * 16
+    else:
+        # use the original image size, but make sure it's divisible by 16
+        control_latent_width = int(math.floor(width / 16))
+        control_latent_height = int(math.floor(height / 16))
+        bucket_width = control_latent_width * 16
+        bucket_height = control_latent_height * 16
+        control_image = control_image.crop((0, 0, bucket_width, bucket_height))
+
+    return image_utils.preprocess_image(control_image, bucket_width, bucket_height)
+
+
 def is_fp8(dt):
     return dt in [torch.float8_e4m3fn, torch.float8_e4m3fnuz, torch.float8_e5m2, torch.float8_e5m2fnuz]
 
@@ -58,30 +95,23 @@ def time_shift(mu: float, sigma: float, t: torch.Tensor):
     return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
 
 
-def get_lin_function(x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: float = 1.15) -> Callable[[float], float]:
-    m = (y2 - y1) / (x2 - x1)
-    b = y1 - m * x1
-    return lambda x: m * x + b
-
-
 def get_schedule(
     num_steps: int,
     image_seq_len: int,
     base_shift: float = 0.5,
     max_shift: float = 1.15,
-    use_flux_shift: bool = True,
-    shift_value: float = None,
+    shift_value: Optional[float] = None,
 ) -> list[float]:
 
     # shifting the schedule to favor high timesteps for higher signal images
     # extra step for zero
     timesteps = torch.linspace(1, 0, num_steps + 1)
 
-    if use_flux_shift:
+    if shift_value is None:
         # eastimate mu based on linear estimation between two points
         mu = get_lin_function(y1=base_shift, y2=max_shift)(image_seq_len)
         timesteps = time_shift(mu, 1.0, timesteps)
-    elif shift_value is not None:
+    else:
         # logits_norm = torch.randn((1,), device=device)
         # timesteps = logits_norm.sigmoid()
         # timesteps = (timesteps * shift_value) / (1 + (shift_value - 1) * timesteps)
@@ -101,7 +131,16 @@ def load_flow_model(
     disable_mmap: bool = False,
     attn_mode: str = "torch",
     split_attn: bool = False,
+    loading_device: Optional[Union[str, torch.device]] = None,
+    fp8_scaled: bool = False,
 ) -> flux_models.Flux:
+    if loading_device is None:
+        loading_device = device
+
+    device = torch.device(device)
+    loading_device = loading_device if loading_device is not None else device
+    flux_kontext_loading_device = loading_device if not fp8_scaled else torch.device("cpu")
+
     # build model
     with init_empty_weights():
         params = flux_models.configs_flux_dev_context.params
@@ -111,8 +150,8 @@ def load_flow_model(
             model = model.to(dtype)
 
     # load_sft doesn't support torch.device
-    logger.info(f"Loading state dict from {ckpt_path}")
-    sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
+    logger.info(f"Loading state dict from {ckpt_path} to {flux_kontext_loading_device}")
+    sd = load_safetensors(ckpt_path, device=flux_kontext_loading_device, disable_mmap=disable_mmap, dtype=dtype)
 
     # if the key has annoying prefix, remove it
     for key in list(sd.keys()):
@@ -120,6 +159,18 @@ def load_flow_model(
         if new_key == key:
             break  # the model doesn't have annoying prefix
         sd[new_key] = sd.pop(key)
+
+    # if fp8_scaled is True, convert the model to fp8
+    if fp8_scaled:
+        # fp8 optimization: calculate on CUDA, move back to CPU if loading_device is CPU (block swap)
+        logger.info(f"Optimizing model weights to fp8. This may take a while.")
+        sd = model.fp8_optimization(sd, device, move_to_device=loading_device.type == "cpu")
+
+        if loading_device.type != "cpu":
+            # make sure all the model weights are on the loading_device
+            logger.info(f"Moving weights to {loading_device}")
+            for key in sd.keys():
+                sd[key] = sd[key].to(loading_device)
 
     info = model.load_state_dict(sd, strict=True, assign=True)
     logger.info(f"Loaded Flux: {info}")
