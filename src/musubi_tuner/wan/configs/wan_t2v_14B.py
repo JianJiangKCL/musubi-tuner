@@ -10,6 +10,7 @@ t2v_14B.update(wan_shared_cfg)
 t2v_14B.i2v = False
 t2v_14B.is_fun_control = False
 t2v_14B.flf2v = False
+t2v_14B.v2_2 = False
 
 # t5
 t2v_14B.t5_checkpoint = "models_t5_umt5-xxl-enc-bf16.pth"

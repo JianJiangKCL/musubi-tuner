@@ -956,23 +956,25 @@ def prepare_i2v_inputs(
         clean_memory_on_device(device)
 
         # load CLIP model
-        clip = load_clip_model(args, config, device)
-        clip.model.to(device)
+        clip_context = None
+        if not config.v2_2:
+            clip = load_clip_model(args, config, device)
+            clip.model.to(device)
 
-        # encode image to CLIP context
-        logger.info(f"Encoding image to CLIP context")
-        with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
-            clip_context = clip.visual([img_tensor[:, None, :, :]])
-            # I2V end image is not officially supported, so no additional CLIP context
-            if end_img is not None and config.flf2v: 
-                end_img_tensor = TF.to_tensor(end_img).sub_(0.5).div_(0.5).to(device)
-                end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
-                clip_context = torch.concat([clip_context, end_clip_context], dim=0)
-        logger.info(f"Encoding complete")
+            # encode image to CLIP context
+            logger.info(f"Encoding image to CLIP context")
+            with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
+                clip_context = clip.visual([img_tensor[:, None, :, :]])
+                # I2V end image is not officially supported, so no additional CLIP context
+                if end_img is not None and config.flf2v:
+                    end_img_tensor = TF.to_tensor(end_img).sub_(0.5).div_(0.5).to(device)
+                    end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
+                    clip_context = torch.concat([clip_context, end_clip_context], dim=0)
+            logger.info(f"Encoding complete")
 
-        # free CLIP model and clean memory
-        del clip
-        clean_memory_on_device(device)
+            # free CLIP model and clean memory
+            del clip
+            clean_memory_on_device(device)
     else:
         # Use pre-encoded context
         context = encoded_context["context"]
@@ -1064,7 +1066,7 @@ def prepare_i2v_inputs(
     noise = noise.to(device)
 
     print(
-        f"noise shape: {noise.shape}, y shape: {y.shape}, context shape: {context[0].shape}, clip_context shape: {clip_context.shape}"
+        f"noise shape: {noise.shape}, y shape: {y.shape}, context shape: {context[0].shape}, clip_context shape: {clip_context.shape if clip_context is not None else 'None'}"
     )
 
     # prepare model input arguments
@@ -1660,31 +1662,35 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         vae = load_vae(args, cfg, device, vae_dtype)
         vae.to_device(device)
 
-        clip = load_clip_model(args, cfg, device)
-        clip.model.to(device)
+        if not cfg.v2_2:
+            clip = load_clip_model(args, cfg, device)
+            clip.model.to(device)
 
         # Process each image and encode with CLIP
         for prompt_data in prompts_data:
             if "image_path" not in prompt_data:
                 continue
 
-            prompt_args = apply_overrides(args, prompt_data)
-            if not os.path.exists(prompt_args.image_path):
-                logger.warning(f"Image path not found: {prompt_args.image_path}")
-                continue
+            if not cfg.v2_2:
+                prompt_args = apply_overrides(args, prompt_data)
+                if not os.path.exists(prompt_args.image_path):
+                    logger.warning(f"Image path not found: {prompt_args.image_path}")
+                    continue
 
-            # Load and encode image with CLIP
-            img = Image.open(prompt_args.image_path).convert("RGB")
-            img_tensor = TF.to_tensor(img).sub_(0.5).div_(0.5).to(device)
+                # Load and encode image with CLIP
+                img = Image.open(prompt_args.image_path).convert("RGB")
+                img_tensor = TF.to_tensor(img).sub_(0.5).div_(0.5).to(device)
 
-            with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
-                clip_context = clip.visual([img_tensor[:, None, :, :]])
+                with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
+                    clip_context = clip.visual([img_tensor[:, None, :, :]])
 
-            if prompt_args.end_image_path is not None and os.path.exists(prompt_args.end_image_path):
-                end_img = Image.open(prompt_args.end_image_path).convert("RGB")
-                end_img_tensor = TF.to_tensor(end_img).sub_(0.5).div_(0.5).to(device)
-                end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
-                clip_context = torch.concat([clip_context, end_clip_context], dim=0)
+                if prompt_args.end_image_path is not None and os.path.exists(prompt_args.end_image_path):
+                    end_img = Image.open(prompt_args.end_image_path).convert("RGB")
+                    end_img_tensor = TF.to_tensor(end_img).sub_(0.5).div_(0.5).to(device)
+                    end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
+                    clip_context = torch.concat([clip_context, end_clip_context], dim=0)
+            else:
+                clip_context = None
 
             encoded_contexts[prompt_data["prompt"]]["clip_context"] = clip_context
 
@@ -1862,31 +1868,34 @@ def process_interactive(args: argparse.Namespace) -> None:
 
                 # 2. For I2V, we need CLIP and VAE
                 if is_i2v:
-                    if clip is None:
-                        logger.info("Loading CLIP model")
-                        clip = load_clip_model(args, cfg, device)
+                    if not cfg.v2_2:
+                        if clip is None:
+                            logger.info("Loading CLIP model")
+                            clip = load_clip_model(args, cfg, device)
 
-                    clip.model.to(device)
+                        clip.model.to(device)
 
-                    # Encode image with CLIP if there's an image path
-                    if prompt_args.image_path and os.path.exists(prompt_args.image_path):
-                        img = Image.open(prompt_args.image_path).convert("RGB")
-                        img_tensor = TF.to_tensor(img).sub_(0.5).div_(0.5).to(device)
+                        # Encode image with CLIP if there's an image path
+                        if prompt_args.image_path and os.path.exists(prompt_args.image_path):
+                            img = Image.open(prompt_args.image_path).convert("RGB")
+                            img_tensor = TF.to_tensor(img).sub_(0.5).div_(0.5).to(device)
 
-                        with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
-                            clip_context = clip.visual([img_tensor[:, None, :, :]])
-
-                        if prompt_args.end_image_path is not None and os.path.exists(prompt_args.end_image_path):
-                            end_img = Image.open(prompt_args.end_image_path).convert("RGB")
-                            end_img_tensor = TF.to_tensor(end_img).sub_(0.5).div_(0.5).to(device)
                             with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
-                                end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
-                            clip_context = torch.concat([clip_context, end_clip_context], dim=0)
-                            
-                        encoded_context["clip_context"] = clip_context
+                                clip_context = clip.visual([img_tensor[:, None, :, :]])
 
-                    # Move CLIP to CPU after use
-                    clip.model.to("cpu")
+                            if prompt_args.end_image_path is not None and os.path.exists(prompt_args.end_image_path):
+                                end_img = Image.open(prompt_args.end_image_path).convert("RGB")
+                                end_img_tensor = TF.to_tensor(end_img).sub_(0.5).div_(0.5).to(device)
+                                with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
+                                    end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
+                                clip_context = torch.concat([clip_context, end_clip_context], dim=0)
+
+                            encoded_context["clip_context"] = clip_context
+
+                        # Move CLIP to CPU after use
+                        clip.model.to("cpu")
+                    else:
+                        encoded_context["clip_context"] = None
 
                     # Load VAE if needed
                     if vae is None:

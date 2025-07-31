@@ -11,6 +11,7 @@ i2v_14B.update(wan_shared_cfg)
 i2v_14B.i2v = True
 i2v_14B.is_fun_control = False
 i2v_14B.flf2v = False
+i2v_14B.v2_2 = False
 
 i2v_14B.t5_checkpoint = "models_t5_umt5-xxl-enc-bf16.pth"
 i2v_14B.t5_tokenizer = "google/umt5-xxl"
