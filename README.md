@@ -61,6 +61,9 @@ If you find this project helpful, please consider supporting its development via
 
 - GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- July 31, 2025:
+    - Added [a section for developers using AI coding agents](#for-developers-using-ai-coding-agents). If you are using AI agents, please read this section.
+
 - July 29, 2025:
     - Added `sentencepiece` to `pyproject.toml` to fix the issue where FLUX.1 Kontext LoRA training was not possible due to missing dependencies.
 
@@ -80,23 +83,36 @@ If you find this project helpful, please consider supporting its development via
 - June 12, 2025:
     - Added `lora_post_hoc_ema.py` for Post Hoc EMA of LoRA models. This allows you to apply Post Hoc EMA after training a LoRA model to improve accuracy. For details, see [this document](./docs/advanced_config.md#lora-post-hoc-ema-merging--loraのpost-hoc-emaマージ).
 
-- June 11, 2025:
-    - Merged the pull request for packaging the repository. Thank you for xhiroga for PR [#319](https://github.com/kohya-ss/musubi-tuner/pull/319)! This introduces `pyproject.toml` and updates installation instructions. For details on migrating your existing environment, please refer to [this discussion post](https://github.com/kohya-ss/musubi-tuner/discussions/345).
-    - Updated `README.md` to reflect the new installation methods using `pip` and `uv` with `pyproject.toml`.
-
-- June 9, 2025:
-    - Added documentation for `--control_image_path` in FramePack's one frame inference documentation. See [FramePack's one frame inference documentation](./docs/framepack_1f.md#one-single-frame-inference--1フレーム推論) for details.
-    - Fixed a bug in FramePack's one frame training where sample image generation would crash if `no_4x` was not specified. PR [#339](https://github.com/kohya-ss/musubi-tuner/pull/339)
-
-- June 8, 2025:
-    - Added support for interactive mode in `wan_generate_video.py` and `fpack_generate_video.py`. If `prompt-toolkit` is installed, it will be used for prompt editing and completion, especially useful in Linux environments. PR [#330](https://github.com/kohya-ss/musubi-tuner/issues/330)
-        - This feature is optional. To enable it, install `prompt-toolkit` with `pip install prompt-toolkit`. If installed, it will be automatically enabled.
-
 ### Releases
 
 We are grateful to everyone who has been contributing to the Musubi Tuner ecosystem through documentation and third-party tools. To support these valuable contributions, we recommend working with our [releases](https://github.com/kohya-ss/musubi-tuner/releases) as stable reference points, as this project is under active development and breaking changes may occur.
 
 You can find the latest release and version history in our [releases page](https://github.com/kohya-ss/musubi-tuner/releases).
+
+### For Developers Using AI Coding Agents
+
+This repository provides recommended instructions to help AI agents like Claude and Gemini understand our project context and coding standards.
+
+To use them, you need to opt-in by creating your own configuration file in the project root.
+
+**Quick Setup:**
+
+1.  Create a `CLAUDE.md` and/or `GEMINI.md` file in the project root.
+2.  Add the following line to your `CLAUDE.md` to import the repository's recommended prompt (currently they are the almost same):
+
+    ```markdown
+    @./.ai/claude.prompt.md
+    ```
+
+    or for Gemini:
+
+    ```markdown
+    @./.ai/gemini.prompt.md
+    ```
+
+3.  You can now add your own personal instructions below the import line (e.g., `Always respond in Japanese.`).
+
+This approach ensures that you have full control over the instructions given to your agent while benefiting from the shared project context. Your `CLAUDE.md` and `GEMINI.md` are already listed in `.gitignore`, so it won't be committed to the repository.
 
 ## Overview
 
