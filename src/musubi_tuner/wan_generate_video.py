@@ -74,6 +74,8 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--dit", type=str, default=None, help="DiT checkpoint path")
+    parser.add_argument("--dit_high_noise", type=str, default=None, help="DiT checkpoint path for high noise (optional)")
+    parser.add_argument("--offload_inactive_dit", action="store_true", help="Offload DiT model to CPU")
     parser.add_argument("--vae", type=str, default=None, help="VAE checkpoint path")
     parser.add_argument("--vae_dtype", type=str, default=None, help="data type for VAE, default is bfloat16")
     parser.add_argument("--vae_cache_cpu", action="store_true", help="cache features in VAE on CPU")
@@ -102,17 +104,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video_size", type=int, nargs=2, default=[256, 256], help="video size, height and width")
     parser.add_argument("--video_length", type=int, default=None, help="video length, Default depends on task")
     parser.add_argument("--fps", type=int, default=16, help="video fps, Default is 16")
-    parser.add_argument("--infer_steps", type=int, default=None, help="number of inference steps")
+    parser.add_argument("--infer_steps", type=int, default=None, help="number of inference steps, default depends on task")
     parser.add_argument("--save_path", type=str, required=True, help="path to save generated video")
     parser.add_argument("--seed", type=int, default=None, help="Seed for evaluation.")
     parser.add_argument(
         "--cpu_noise", action="store_true", help="Use CPU to generate noise (compatible with ComfyUI). Default is False."
     )
     parser.add_argument(
-        "--guidance_scale",
+        "--timestep_boundary", type=float, default=None, help="Timestep boundary for guidance. Default depends on task."
+    )
+    parser.add_argument(
+        "--guidance_scale", type=float, default=None, help="Guidance scale for classifier free guidance. Default depends on task."
+    )
+    parser.add_argument(
+        "--guidance_scale_high_noise",
         type=float,
-        default=5.0,
-        help="Guidance scale for classifier free guidance. Default is 5.0.",
+        default=None,
+        help="Guidance scale for classifier free guidance in high noise model. Default depends on task.",
     )
     parser.add_argument("--video_path", type=str, default=None, help="path to video for video2video inference")
     parser.add_argument("--image_path", type=str, default=None, help="path to image for image2video inference")
@@ -332,17 +340,31 @@ def get_task_defaults(task: str, size: Optional[Tuple[int, int]] = None) -> Tupl
         size: size of the video (width, height)
 
     Returns:
-        Tuple[int, float, int, bool]: (infer_steps, flow_shift, video_length, needs_clip)
+        Tuple[int, float, float, float, flow_shift, int, bool]: (infer_steps, boundary, flow_shift, guidance_scale, guidance_scale_high_noise, video_length, needs_clip)
     """
     width, height = size if size else (0, 0)
 
-    if "t2i" in task:
-        return 50, 5.0, 1, False
-    elif "i2v" in task:
-        flow_shift = 3.0 if (width == 832 and height == 480) or (width == 480 and height == 832) else 5.0
-        return 40, flow_shift, 81, True
-    else:  # t2v or default
-        return 50, 5.0, 81, False
+    cfg = WAN_CONFIGS[task]
+
+    infer_steps = cfg.sample_steps
+    boundary = cfg.boundary  # may be None
+    flow_shift = cfg.sample_shift
+    guidance_scale = cfg.sample_guide_scale[0]
+    guidance_scale_high_noise = cfg.sample_guide_scale[1] if len(cfg.sample_guide_scale) > 1 else guidance_scale
+
+    video_length = 1 if "t2i" in task else 81  # default video length for t2i is 1, for others is 81
+
+    if not cfg.v2_2:
+        # Wan2.1
+        needs_clip = "i2v" in task
+        if "i2v" in task and ((width == 832 and height == 480) or (width == 480 and height == 832)):
+            #  I2V
+            flow_shift = 3.0
+    else:
+        # Wan2.2
+        needs_clip = False
+
+    return infer_steps, boundary, flow_shift, guidance_scale, guidance_scale_high_noise, video_length, needs_clip
 
 
 def setup_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -355,13 +377,21 @@ def setup_args(args: argparse.Namespace) -> argparse.Namespace:
         argparse.Namespace: updated arguments
     """
     # Get default values for the task
-    infer_steps, flow_shift, video_length, _ = get_task_defaults(args.task, tuple(args.video_size))
+    infer_steps, boundary, flow_shift, guidance_scale, guidance_scale_high_noise, video_length, needs_clip = get_task_defaults(
+        args.task, tuple(args.video_size)
+    )
 
     # Apply default values to unset arguments
     if args.infer_steps is None:
         args.infer_steps = infer_steps
+    if args.timestep_boundary is None:
+        args.timestep_boundary = boundary
     if args.flow_shift is None:
         args.flow_shift = flow_shift
+    if args.guidance_scale is None:
+        args.guidance_scale = guidance_scale
+    if args.guidance_scale_high_noise is None:
+        args.guidance_scale_high_noise = guidance_scale_high_noise
     if args.video_length is None:
         args.video_length = video_length
 
@@ -498,8 +528,36 @@ def load_clip_model(args: argparse.Namespace, config, device: torch.device) -> C
     return clip
 
 
+def load_dit_models(
+    args: argparse.Namespace,
+    config,
+    device: torch.device,
+    dit_dtype: torch.dtype,
+    dit_weight_dtype: Optional[torch.dtype] = None,
+    is_i2v: bool = False,
+) -> Tuple[WanModel, ...]:
+    """load DiT models
+
+    Returns:
+        Tuple[WanModel, ...]: loaded DiT models. If args.dit_high_noise is specified, returns a tuple with two models: high noise and low noise.
+    """
+    model = load_dit_model(args, args.dit, config, device, dit_dtype, dit_weight_dtype, is_i2v=is_i2v)
+
+    if args.dit_high_noise is not None and len(args.dit_high_noise) > 0:
+        if args.offload_inactive_dit:
+            logger.warning(f"Offloading low noise DiT model to CPU, high noise DiT will be loaded on GPU")
+            model.to("cpu")
+
+        logger.info(f"Loading high noise DiT model from {args.dit_high_noise}")
+        dit_high_noise = load_dit_model(args, args.dit_high_noise, config, device, dit_dtype, dit_weight_dtype, is_i2v=is_i2v)
+        return (dit_high_noise, model)
+
+    return (model,)
+
+
 def load_dit_model(
     args: argparse.Namespace,
+    dit_path: str,
     config,
     device: torch.device,
     dit_dtype: torch.dtype,
@@ -510,6 +568,7 @@ def load_dit_model(
 
     Args:
         args: command line arguments
+        dit_path: path to the DiT checkpoint
         config: model configuration
         device: device to use
         dit_dtype: data type for the model
@@ -544,7 +603,7 @@ def load_dit_model(
     model = load_wan_model(
         config,
         device,
-        args.dit,
+        dit_path,
         args.attn_mode,
         False,
         loading_device,
@@ -552,6 +611,7 @@ def load_dit_model(
         args.fp8_scaled and not args.lycoris,
         lora_weights_list=lora_weights_list,
         lora_multipliers=args.lora_multiplier,
+        use_scaled_mm=args.fp8_fast,
     )
 
     # merge LoRA weights
@@ -1179,7 +1239,7 @@ def setup_scheduler(args: argparse.Namespace, config, device: torch.device) -> T
 
 
 def run_sampling(
-    model: WanModel,
+    models: Tuple[WanModel, ...],
     noise: torch.Tensor,
     scheduler: Any,
     timesteps: torch.Tensor,
@@ -1193,7 +1253,7 @@ def run_sampling(
 ) -> torch.Tensor:
     """run sampling
     Args:
-        model: dit model
+        models: dit models
         noise: initial noise
         scheduler: scheduler for sampling
         timesteps: time steps for sampling
@@ -1267,7 +1327,34 @@ def run_sampling(
     slg_start_step = int(args.slg_start * num_timesteps)
     slg_end_step = int(args.slg_end * num_timesteps)
 
+    prev_high_noise = args.timestep_boundary is not None
+    if prev_high_noise:
+        model = models[0]
+        guidance_scale = args.guidance_scale_high_noise
+    else:
+        model = models[-1]  # use low noise model for low noise steps
+        guidance_scale = args.guidance_scale
+
+    logger.info(
+        f"Starting sampling (high noise: {prev_high_noise}). Models: {len(models)}, timestep boundary: {args.timestep_boundary}, flow shift: {args.flow_shift}, guidance scale: {guidance_scale}"
+    )
+
     for i, t in enumerate(tqdm(timesteps)):
+        is_high_noise = (t / 1000.0) >= args.timestep_boundary if args.timestep_boundary is not None else False
+        print(is_high_noise, prev_high_noise, t, args.timestep_boundary)
+
+        if not is_high_noise and prev_high_noise:
+            guidance_scale = args.guidance_scale
+            logger.info(f"Switching to low noise at step {i}, t={t}, guidance_scale={guidance_scale}")
+            model = models[-1]  # use low noise model for low noise steps
+            if len(models) > 1 and args.offload_inactive_dit:
+                logger.info(f"Switching model to CPU/GPU for both low and high noise models")
+                models[0].to("cpu")
+                model.move_to_device_except_swap_blocks(device)
+                model.prepare_block_swap_before_forward()
+
+        prev_high_noise = is_high_noise
+
         # latent is on CPU if use_cpu_offload is True
         latent_model_input = [latent.to(device)]
         timestep = torch.stack([t]).to(device)
@@ -1284,7 +1371,7 @@ def run_sampling(
 
                     # apply guidance
                     # SD3 formula: scaled = neg_out + (pos_out - neg_out) * cond_scale
-                    noise_pred = noise_pred_uncond + args.guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
 
                     # calculate skip layer out
                     skip_layer_out = model(latent_model_input, t=timestep, skip_block_indices=args.slg_layers, **arg_null)[0].to(
@@ -1301,14 +1388,14 @@ def run_sampling(
                     )
 
                     # apply guidance
-                    noise_pred = noise_pred_uncond + args.guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
 
                 else:
                     # normal guidance
                     noise_pred_uncond = model(latent_model_input, t=timestep, **arg_null)[0].to(latent_storage_device)
 
                     # apply guidance
-                    noise_pred = noise_pred_uncond + args.guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
             else:
                 noise_pred = noise_pred_cond
 
@@ -1358,7 +1445,7 @@ def generate(
     if shared_models is not None:
         # Use shared models and encoded data
         vae = shared_models.get("vae")
-        model = shared_models.get("model")
+        models = shared_models.get("models", [])
         encoded_context = shared_models.get("encoded_contexts", {}).get(args.prompt)
 
         # prepare inputs
@@ -1383,8 +1470,8 @@ def generate(
                 vae = load_vae(args, cfg, device, vae_dtype)
             noise, inputs = prepare_t2v_inputs(args, cfg, accelerator, device, vae)
 
-        # load DiT model
-        model = load_dit_model(args, cfg, device, dit_dtype, dit_weight_dtype, is_i2v)
+        # load DiT models
+        models = load_dit_models(args, cfg, device, dit_dtype, dit_weight_dtype, is_i2v)
 
         # if we only want to save the model, we can skip the rest
         if args.save_merged_model:
@@ -1398,7 +1485,7 @@ def generate(
     seed_g.manual_seed(seed)
 
     # run sampling
-    latent = run_sampling(model, noise, scheduler, timesteps, args, inputs, device, seed_g, accelerator, is_i2v)
+    latent = run_sampling(models, noise, scheduler, timesteps, args, inputs, device, seed_g, accelerator, is_i2v)
     if one_frame_inference_index is not None:
         latent = latent[:, one_frame_inference_index : one_frame_inference_index + 1, :]
         latent = latent.contiguous()  # safetensors requires contiguous tensors :(
@@ -1406,7 +1493,7 @@ def generate(
     # Only clean up shared models if they were created within this function
     if shared_models is None:
         # free memory
-        del model
+        del models
         del scheduler
         synchronize_device(device)
 
@@ -1718,15 +1805,15 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         vae.to_device("cpu")
 
     # 4. Load DiT model, 5. Merge LoRA weights if needed, and 6. Optimize model
-    logger.info("Loading DiT model")
-    model = load_dit_model(args, cfg, device, dit_dtype, dit_weight_dtype, is_i2v)
+    logger.info("Loading DiT model(s)")
+    models = load_dit_models(args, cfg, device, dit_dtype, dit_weight_dtype, is_i2v)
 
     if args.save_merged_model:
         logger.info("Model merged and saved. Exiting.")
         return
 
     # Create shared models dict for generate function
-    shared_models = {"vae": vae, "model": model, "encoded_contexts": encoded_contexts}
+    shared_models = {"vae": vae, "models": models, "encoded_contexts": encoded_contexts}
 
     # 7. Generate for each prompt
     all_latents = []
@@ -1750,7 +1837,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         all_prompt_args.append(prompt_args)
 
     # 8. Free DiT model
-    del model
+    del models
     clean_memory_on_device(device)
     synchronize_device(device)
 
@@ -1809,7 +1896,7 @@ def process_interactive(args: argparse.Namespace) -> None:
     # Initialize models to None
     text_encoder = None
     vae = None
-    model = None
+    models = None
     clip = None
 
     print("Interactive mode. Enter prompts (Ctrl+D or Ctrl+Z (Windows) to exit):")
@@ -1913,24 +2000,34 @@ def process_interactive(args: argparse.Namespace) -> None:
                     vae = load_vae(args, cfg, device, vae_dtype)
 
                 # 3. Load DiT model if not already loaded
-                if model is None:
+                if models is None:
                     logger.info("Loading DiT model")
-                    model = load_dit_model(args, cfg, device, dit_dtype, dit_weight_dtype, is_i2v)
+                    models = load_dit_models(args, cfg, device, dit_dtype, dit_weight_dtype, is_i2v)
                 else:
                     # Move model to GPU if it was offloaded
                     if args.blocks_to_swap > 0:
-                        model.prepare_block_swap_before_forward()
+                        if len(models) > 1:
+                            if args.offload_inactive_dit:
+                                models[-1].to("cpu")  # Move last model to CPU if multiple models
+                            else:
+                                models[-1].move_to_device_except_swap_blocks(device)
+                                models[-1].prepare_block_swap_before_forward()
+                        models[0].move_to_device_except_swap_blocks(device)
+                        models[0].prepare_block_swap_before_forward()
                     else:
-                        model.to(device)
+                        for model in models:
+                            model.to(device)
 
                 # Create shared models dict
-                shared_models = {"vae": vae, "model": model, "encoded_contexts": {prompt_data["prompt"]: encoded_context}}
+                shared_models = {"vae": vae, "models": models, "encoded_contexts": {prompt_data["prompt"]: encoded_context}}
 
                 # Generate latent
                 latent = generate(prompt_args, gen_settings, shared_models)
 
                 # Move model to CPU after generation
-                model.to("cpu")
+                for model in models:
+                    model.to("cpu")
+                del model
 
                 # Save latent if needed
                 height, width, _ = check_inputs(prompt_args)
@@ -1973,8 +2070,8 @@ def process_interactive(args: argparse.Namespace) -> None:
         del clip
     if vae is not None:
         del vae
-    if model is not None:
-        del model
+    if models is not None:
+        del models
 
     clean_memory_on_device(device)
     gc.collect()

@@ -32,3 +32,9 @@ t2v_1_3B.window_size = (-1, -1)
 t2v_1_3B.qk_norm = True
 t2v_1_3B.cross_attn_norm = True
 t2v_1_3B.eps = 1e-6
+
+# inference
+t2v_1_3B.sample_shift = 5.0
+t2v_1_3B.sample_steps = 50
+t2v_1_3B.boundary = None
+t2v_1_3B.sample_guide_scale = (5.0,)

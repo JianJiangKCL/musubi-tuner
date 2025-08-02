@@ -945,6 +945,7 @@ def load_wan_model(
     fp8_scaled: bool = False,
     lora_weights_list: Optional[Dict[str, torch.Tensor]] = None,
     lora_multipliers: Optional[List[float]] = None,
+    use_scaled_mm: bool = False,
 ) -> WanModel:
     """
     Load a WAN model from the specified checkpoint.
@@ -1010,7 +1011,7 @@ def load_wan_model(
             sd[key[22:]] = sd.pop(key)
 
     if fp8_scaled:
-        apply_fp8_monkey_patch(model, sd, use_scaled_mm=False)
+        apply_fp8_monkey_patch(model, sd, use_scaled_mm=use_scaled_mm)
 
         if loading_device.type != "cpu":
             # make sure all the model weights are on the loading_device
