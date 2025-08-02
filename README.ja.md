@@ -52,6 +52,9 @@ Wan2.1については、[Wan2.1のドキュメント](./docs/wan.md)も参照し
 
 - GitHub Discussionsを有効にしました。コミュニティのQ&A、知識共有、技術情報の交換などにご利用ください。バグ報告や機能リクエストにはIssuesを、質問や経験の共有にはDiscussionsをご利用ください。[Discussionはこちら](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- 2025/08/02
+    - `--fp8_scaled`を指定したときのFramePack、Wan2.1のモデル読み込みのピークメモリ使用量を削減しました。これにより、学習、推論前のモデル読み込み時のVRAM使用量が削減されます。
+
 - 2025/08/01
     - FLUX. KontextのLoRA学習でblock swapが動作しない不具合を修正しました。[PR #402](https://github.com/kohya-ss/musubi-tuner/pull/402) および [PR #403](https://github.com/kohya-ss/musubi-tuner/pull/403) sdbds氏に感謝します。
 
