@@ -1176,10 +1176,6 @@ def prepare_i2v_inputs(
     )
     noise = noise.to(device)
 
-    print(
-        f"noise shape: {noise.shape}, y shape: {y.shape}, context shape: {context[0].shape}, clip_context shape: {clip_context.shape if clip_context is not None else 'None'}"
-    )
-
     # prepare model input arguments
     arg_c = {
         "context": [context[0]],
@@ -1373,7 +1369,6 @@ def run_sampling(
 
     for i, t in enumerate(tqdm(timesteps)):
         is_high_noise = (t / 1000.0) >= args.timestep_boundary if args.timestep_boundary is not None else False
-        print(is_high_noise, prev_high_noise, t, args.timestep_boundary)
 
         if not is_high_noise and prev_high_noise:
             guidance_scale = args.guidance_scale

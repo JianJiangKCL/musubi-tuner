@@ -823,7 +823,8 @@ class WanModel(nn.Module):  # ModelMixin, ConfigMixin):
                 e0 = self.time_projection(e).unflatten(1, (6, self.dim))
             else:  # For Wan2.2
                 if t.dim() == 1:
-                    t = t.expand(t.size(0), seq_len)
+                    # t = t.expand(t.size(0), seq_len) # this should be a bug in the original code
+                    t = t.unsqueeze(1).expand(-1, seq_len)
                 bt = t.size(0)
                 t = t.flatten()
                 e = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, t).unflatten(0, (bt, seq_len)).float())
