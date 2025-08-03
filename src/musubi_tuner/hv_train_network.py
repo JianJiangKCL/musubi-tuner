@@ -798,7 +798,7 @@ class NetworkTrainer:
                 t = torch.sigmoid(-logsnr / 2)
 
             elif args.timestep_sampling == "qinglong":
-                # Qinglong triple hybrid sampling: flux_shift:logsnr:logsnr2 = 1:8:1
+                # Qinglong triple hybrid sampling: flux_shift:logsnr:logsnr2 = 1:7:2
                 # First decide which method to use for each sample independently
                 decision_t = torch.rand((batch_size,), device=device)
                 
@@ -808,15 +808,15 @@ class NetworkTrainer:
                 t_min_scaled = t_min / 1000.0
                 t_max_scaled = t_max / 1000.0
                 
-                # Create masks based on 1:8:1 ratio
-                flux_mask = decision_t < 0.85  # 85% for flux_shift
-                logsnr_mask = (decision_t >= 0.85) & (decision_t < 0.95)  # 10% for logsnr
-                logsnr_mask2 = decision_t >= 0.95  # 5% for logsnr with -logit_mean
+                # Create masks based on 1:7:2 ratio
+                flux_mask = decision_t < 0.7  # 70% for flux_shift
+                logsnr_mask = (decision_t >= 0.7) & (decision_t < 0.8)  # 10% for logsnr
+                logsnr_mask2 = decision_t >= 0.8  # 20% for logsnr with -logit_mean
                 
                 # Initialize output tensor
                 t = torch.zeros((batch_size,), device=device)
                 
-                # Generate flux_shift samples for selected indices (80%)
+                # Generate flux_shift samples for selected indices (70%)
                 if flux_mask.any():
                     flux_count = flux_mask.sum().item()
                     h, w = latents.shape[-2:]
@@ -842,7 +842,7 @@ class NetworkTrainer:
                     t_logsnr_scaled = t_logsnr * (t_max_scaled - t_min_scaled) + t_min_scaled
                     t[logsnr_mask] = t_logsnr_scaled
                 
-                # Generate logsnr2 samples with -logit_mean for selected indices (10%)
+                # Generate logsnr2 samples with -logit_mean for selected indices (20%)
                 if logsnr_mask2.any():
                     logsnr2_count = logsnr_mask2.sum().item()
                     logsnr2 = torch.normal(mean=5.36, std=1.0, size=(logsnr2_count,), device=device)
