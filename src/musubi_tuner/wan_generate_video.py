@@ -84,6 +84,8 @@ def parse_args() -> argparse.Namespace:
     # LoRA
     parser.add_argument("--lora_weight", type=str, nargs="*", required=False, default=None, help="LoRA weight path")
     parser.add_argument("--lora_multiplier", type=float, nargs="*", default=1.0, help="LoRA multiplier")
+    parser.add_argument("--lora_weight_high_noise", type=str, nargs="*", default=None, help="LoRA weight path for high noise")
+    parser.add_argument("--lora_multiplier_high_noise", type=float, nargs="*", default=1.0, help="LoRA multiplier for high noise")
     parser.add_argument("--include_patterns", type=str, nargs="*", default=None, help="LoRA module include patterns")
     parser.add_argument("--exclude_patterns", type=str, nargs="*", default=None, help="LoRA module exclude patterns")
     parser.add_argument(
@@ -541,7 +543,7 @@ def load_dit_models(
     Returns:
         Tuple[WanModel, ...]: loaded DiT models. If args.dit_high_noise is specified, returns a tuple with two models: high noise and low noise.
     """
-    model = load_dit_model(args, args.dit, config, device, dit_dtype, dit_weight_dtype, is_i2v=is_i2v)
+    model = load_dit_model(args, args.dit, args.lora_weight, args.lora_multiplier, config, device, dit_weight_dtype)
 
     if args.dit_high_noise is not None and len(args.dit_high_noise) > 0:
         if args.offload_inactive_dit:
@@ -549,7 +551,15 @@ def load_dit_models(
             model.to("cpu")
 
         logger.info(f"Loading high noise DiT model from {args.dit_high_noise}")
-        dit_high_noise = load_dit_model(args, args.dit_high_noise, config, device, dit_dtype, dit_weight_dtype, is_i2v=is_i2v)
+        dit_high_noise = load_dit_model(
+            args,
+            args.dit_high_noise,
+            args.lora_weight_high_noise,
+            args.lora_multiplier_high_noise,
+            config,
+            device,
+            dit_weight_dtype,
+        )
         return (dit_high_noise, model)
 
     return (model,)
@@ -558,17 +568,19 @@ def load_dit_models(
 def load_dit_model(
     args: argparse.Namespace,
     dit_path: str,
+    lora_weights: List[str],
+    lora_multipliers: List[float],
     config,
     device: torch.device,
-    dit_dtype: torch.dtype,
     dit_weight_dtype: Optional[torch.dtype] = None,
-    is_i2v: bool = False,
 ) -> WanModel:
     """load DiT model
 
     Args:
         args: command line arguments
         dit_path: path to the DiT checkpoint
+        lora_weights: path to the LoRA weights
+        lora_multipliers: multiplier for the LoRA weights
         config: model configuration
         device: device to use
         dit_dtype: data type for the model
@@ -586,9 +598,9 @@ def load_dit_model(
         loading_device = device
 
     # load LoRA weights
-    if not args.lycoris and args.lora_weight is not None and len(args.lora_weight) > 0:
+    if not args.lycoris and lora_weights is not None and len(lora_weights) > 0:
         lora_weights_list = []
-        for lora_weight in args.lora_weight:
+        for lora_weight in lora_weights:
             logger.info(f"Loading LoRA weight from: {lora_weight}")
             lora_sd = load_file(lora_weight)  # load on CPU, dtype is as is
             lora_sd = filter_lora_state_dict(lora_sd, args.include_patterns, args.exclude_patterns)
@@ -610,14 +622,24 @@ def load_dit_model(
         loading_weight_dtype,
         args.fp8_scaled and not args.lycoris,
         lora_weights_list=lora_weights_list,
-        lora_multipliers=args.lora_multiplier,
+        lora_multipliers=lora_multipliers,
         use_scaled_mm=args.fp8_fast,
     )
 
     # merge LoRA weights
     if args.lycoris:
-        if args.lora_weight is not None and len(args.lora_weight) > 0:
-            merge_lora_weights(lora_wan, model, args, device)
+        if lora_weights is not None and len(lora_weights) > 0:
+            merge_lora_weights(
+                lora_wan,
+                model,
+                lora_weights,
+                lora_multipliers,
+                args.include_patterns,
+                args.exclude_patterns,
+                device,
+                lycoris=True,
+                save_merged_model=args.save_merged_model,
+            )
 
         if args.fp8_scaled:
             # load state dict as-is and optimize to fp8
@@ -682,8 +704,13 @@ def load_dit_model(
 def merge_lora_weights(
     lora_module: ModuleType,
     model: torch.nn.Module,
-    args: argparse.Namespace,
+    lora_weights: List[str],
+    lora_multipliers: List[float],
+    include_patterns: Optional[List[str]],
+    exclude_patterns: Optional[List[str]],
     device: torch.device,
+    lycoris: bool = False,
+    save_merged_model: Optional[str] = None,
     converter: Optional[callable] = None,
 ) -> None:
     """merge LoRA weights to the model
@@ -691,16 +718,21 @@ def merge_lora_weights(
     Args:
         lora_module: LoRA module, e.g. lora_wan
         model: DiT model
-        args: command line arguments
-        device: device to use
-        converter: Optional callable to convert weights
+        lora_weights: paths to LoRA weights
+        lora_multipliers: multipliers for LoRA weights
+        include_patterns: regex patterns to include LoRA modules
+        exclude_patterns: regex patterns to exclude LoRA modules
+        device: torch.device
+        lycoris: use LyCORIS
+        save_merged_model: path to save merged model, if specified, no inference will be performed
+        converter: Optional[callable] = None
     """
-    if args.lora_weight is None or len(args.lora_weight) == 0:
+    if lora_weights is None or len(lora_weights) == 0:
         return
 
-    for i, lora_weight in enumerate(args.lora_weight):
-        if args.lora_multiplier is not None and len(args.lora_multiplier) > i:
-            lora_multiplier = args.lora_multiplier[i]
+    for i, lora_weight in enumerate(lora_weights):
+        if lora_multipliers is not None and len(lora_multipliers) > i:
+            lora_multiplier = lora_multipliers[i]
         else:
             lora_multiplier = 1.0
 
@@ -711,14 +743,14 @@ def merge_lora_weights(
 
         # apply include/exclude patterns
         original_key_count = len(weights_sd.keys())
-        if args.include_patterns is not None and len(args.include_patterns) > i:
-            include_pattern = args.include_patterns[i]
+        if include_patterns is not None and len(include_patterns) > i:
+            include_pattern = include_patterns[i]
             regex_include = re.compile(include_pattern)
             weights_sd = {k: v for k, v in weights_sd.items() if regex_include.search(k)}
             logger.info(f"Filtered keys with include pattern {include_pattern}: {original_key_count} -> {len(weights_sd.keys())}")
-        if args.exclude_patterns is not None and len(args.exclude_patterns) > i:
+        if exclude_patterns is not None and len(exclude_patterns) > i:
             original_key_count_ex = len(weights_sd.keys())
-            exclude_pattern = args.exclude_patterns[i]
+            exclude_pattern = exclude_patterns[i]
             regex_exclude = re.compile(exclude_pattern)
             weights_sd = {k: v for k, v in weights_sd.items() if not regex_exclude.search(k)}
             logger.info(
@@ -731,7 +763,7 @@ def merge_lora_weights(
             if len(weights_sd) == 0:
                 logger.warning(f"No keys left after filtering.")
 
-        if args.lycoris:
+        if lycoris:
             lycoris_net, _ = create_network_from_weights(
                 multiplier=lora_multiplier,
                 file=None,
@@ -750,9 +782,9 @@ def merge_lora_weights(
         logger.info("LoRA weights loaded")
 
     # save model here before casting to dit_weight_dtype
-    if args.save_merged_model:
-        logger.info(f"Saving merged model to {args.save_merged_model}")
-        mem_eff_save_file(model.state_dict(), args.save_merged_model)  # save_file needs a lot of memory
+    if save_merged_model:
+        logger.info(f"Saving merged model to {save_merged_model}")
+        mem_eff_save_file(model.state_dict(), save_merged_model)  # save_file needs a lot of memory
         logger.info("Merged model saved")
 
 
