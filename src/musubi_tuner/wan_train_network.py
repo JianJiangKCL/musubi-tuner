@@ -456,7 +456,6 @@ class WanNetworkTrainer(NetworkTrainer):
         timesteps: torch.Tensor,
         network_dtype: torch.dtype,
     ):
-        print(timesteps)
         model: WanModel = transformer
 
         # I2V training and Control training
