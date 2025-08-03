@@ -83,9 +83,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clip", type=str, default=None, help="text encoder (CLIP) checkpoint path")
     # LoRA
     parser.add_argument("--lora_weight", type=str, nargs="*", required=False, default=None, help="LoRA weight path")
-    parser.add_argument("--lora_multiplier", type=float, nargs="*", default=1.0, help="LoRA multiplier")
+    parser.add_argument("--lora_multiplier", type=float, nargs="*", default=None, help="LoRA multiplier")
     parser.add_argument("--lora_weight_high_noise", type=str, nargs="*", default=None, help="LoRA weight path for high noise")
-    parser.add_argument("--lora_multiplier_high_noise", type=float, nargs="*", default=1.0, help="LoRA multiplier for high noise")
+    parser.add_argument("--lora_multiplier_high_noise", type=float, nargs="*", default=None, help="LoRA multiplier for high noise")
     parser.add_argument("--include_patterns", type=str, nargs="*", default=None, help="LoRA module include patterns")
     parser.add_argument("--exclude_patterns", type=str, nargs="*", default=None, help="LoRA module exclude patterns")
     parser.add_argument(
@@ -113,7 +113,10 @@ def parse_args() -> argparse.Namespace:
         "--cpu_noise", action="store_true", help="Use CPU to generate noise (compatible with ComfyUI). Default is False."
     )
     parser.add_argument(
-        "--timestep_boundary", type=float, default=None, help="Timestep boundary for guidance. Default depends on task."
+        "--timestep_boundary",
+        type=float,
+        default=None,
+        help="Timestep boundary for guidance (0.0 to 1.0). Default depends on task.",
     )
     parser.add_argument(
         "--guidance_scale", type=float, default=None, help="Guidance scale for classifier free guidance. Default depends on task."
@@ -400,6 +403,10 @@ def setup_args(args: argparse.Namespace) -> argparse.Namespace:
     # Force video_length to 1 for t2i tasks
     if "t2i" in args.task:
         assert args.video_length == 1, f"video_length should be 1 for task {args.task}"
+    if args.timestep_boundary is not None:
+        if args.timestep_boundary > 1.0:
+            logger.warning(f"timestep_boundary {args.timestep_boundary} is greater than 1.0, setting to {args.timestep_boundary / 1000.0}")
+            args.timestep_boundary = args.timestep_boundary / 1000.0
 
     # parse slg_layers
     if args.slg_layers is not None:
