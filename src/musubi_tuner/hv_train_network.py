@@ -768,7 +768,6 @@ class NetworkTrainer:
             or args.timestep_sampling == "logsnr"
             or args.timestep_sampling == "qinglong"
         ):
-            skip_scaling = False
             if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
                 # Simple random t-based noise sampling
                 if args.timestep_sampling == "sigmoid":
@@ -802,12 +801,6 @@ class NetworkTrainer:
                 # First decide which method to use for each sample independently
                 decision_t = torch.rand((batch_size,), device=device)
                 
-                # Apply t_min and t_max scaling to decision values
-                t_min = args.min_timestep if args.min_timestep is not None else 0
-                t_max = args.max_timestep if args.max_timestep is not None else 1000.0
-                t_min_scaled = t_min / 1000.0
-                t_max_scaled = t_max / 1000.0
-                
                 # Create masks based on 1:7:2 ratio
                 flux_mask = decision_t < 0.7  # 70% for flux_shift
                 logsnr_mask = (decision_t >= 0.7) & (decision_t < 0.8)  # 10% for logsnr
@@ -828,9 +821,7 @@ class NetworkTrainer:
                     t_flux = logits_norm_flux.sigmoid()
                     t_flux = (t_flux * shift) / (1 + (shift - 1) * t_flux)
                     
-                    # Scale flux results
-                    t_flux_scaled = t_flux * (t_max_scaled - t_min_scaled) + t_min_scaled
-                    t[flux_mask] = t_flux_scaled
+                    t[flux_mask] = t_flux
                 
                 # Generate logsnr samples for selected indices (10%)
                 if logsnr_mask.any():
@@ -838,9 +829,7 @@ class NetworkTrainer:
                     logsnr = torch.normal(mean=args.logit_mean, std=args.logit_std, size=(logsnr_count,), device=device)
                     t_logsnr = torch.sigmoid(-logsnr / 2)
                     
-                    # Scale logsnr results
-                    t_logsnr_scaled = t_logsnr * (t_max_scaled - t_min_scaled) + t_min_scaled
-                    t[logsnr_mask] = t_logsnr_scaled
+                    t[logsnr_mask] = t_logsnr
                 
                 # Generate logsnr2 samples with -logit_mean for selected indices (20%)
                 if logsnr_mask2.any():
@@ -848,19 +837,13 @@ class NetworkTrainer:
                     logsnr2 = torch.normal(mean=5.36, std=1.0, size=(logsnr2_count,), device=device)
                     t_logsnr2 = torch.sigmoid(-logsnr2 / 2)
                     
-                    # Scale logsnr2 results
-                    t_logsnr2_scaled = t_logsnr2 * (t_max_scaled - t_min_scaled) + t_min_scaled
-                    t[logsnr_mask2] = t_logsnr2_scaled
-                
-                # Skip the normal t_min/t_max scaling later since we already applied it
-                skip_scaling = True
+                    t[logsnr_mask2] = t_logsnr2
 
-            if not skip_scaling:
-                t_min = args.min_timestep if args.min_timestep is not None else 0
-                t_max = args.max_timestep if args.max_timestep is not None else 1000.0
-                t_min /= 1000.0
-                t_max /= 1000.0
-                t = t * (t_max - t_min) + t_min  # scale to [t_min, t_max], default [0, 1]
+            t_min = args.min_timestep if args.min_timestep is not None else 0
+            t_max = args.max_timestep if args.max_timestep is not None else 1000.0
+            t_min /= 1000.0
+            t_max /= 1000.0
+            t = t * (t_max - t_min) + t_min  # scale to [t_min, t_max], default [0, 1]
 
             timesteps = t * 1000.0
             t = t.view(-1, 1, 1, 1, 1) if latents.ndim == 5 else t.view(-1, 1, 1, 1)
