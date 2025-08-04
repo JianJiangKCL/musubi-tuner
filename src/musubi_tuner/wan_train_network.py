@@ -527,10 +527,8 @@ class WanNetworkTrainer(NetworkTrainer):
                     args, noise[i : i + 1], latents[i : i + 1], noise_scheduler, device, dtype
                 )
                 if (
-                    high_noise
-                    and timesteps[0] / 1000.0 >= self.timestep_boundary
-                    or not high_noise
-                    and timesteps[0] / 1000.0 < self.timestep_boundary
+                    (high_noise and timesteps[0] / 1000.0 >= self.timestep_boundary)
+                    or (not high_noise and timesteps[0] / 1000.0 < self.timestep_boundary)
                 ):
                     final_noisy_model_inputs.append(noisy_model_input)
                     final_timesteps_list.append(timesteps)
