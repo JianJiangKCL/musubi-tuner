@@ -2061,7 +2061,6 @@ def process_interactive(args: argparse.Namespace) -> None:
                 # Move model to CPU after generation
                 for model in models:
                     model.to("cpu")
-                del model
 
                 # Save latent if needed
                 height, width, _ = check_inputs(prompt_args)
