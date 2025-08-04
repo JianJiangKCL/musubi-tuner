@@ -83,9 +83,7 @@ class WanNetworkTrainer(NetworkTrainer):
                     not args.offload_inactive_dit
                 ), "Block swap is not supported with offloading inactive DiT / 非アクティブDiTをオフロードする設定ではブロックスワップはサポートされていません"
 
-        self.timestep_boundary = args.timestep_boundary
-        if self.timestep_boundary is None:
-            self.timestep_boundary = self.config.boundary  # may be None
+        self.timestep_boundary = args.timestep_boundary if args.timestep_boundary is not None else self.config.boundary  # may be None
         if self.timestep_boundary is None and self.high_low_training:
             raise ValueError(
                 "timestep_boundary is not specified for high noise model"
