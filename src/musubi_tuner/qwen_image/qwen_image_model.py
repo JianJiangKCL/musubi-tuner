@@ -953,23 +953,24 @@ class QwenImageTransformer2DModel(nn.Module):  # ModelMixin, ConfigMixin, PeftAd
         ), f"Cannot swap more than {self.num_blocks - 1} blocks. Requested {self.blocks_to_swap} blocks to swap."
 
         self.offloader = ModelOffloader(
-            "wan_attn_block", self.transformer_blocks, self.num_blocks, self.blocks_to_swap, supports_backward, device  # , debug=True
+            "qwen-image-block", self.transformer_blocks, self.num_blocks, self.blocks_to_swap, supports_backward, device
         )
+        # , debug=True
         print(
-            f"WanModel: Block swap enabled. Swapping {self.blocks_to_swap} blocks out of {self.num_blocks} blocks. Supports backward: {supports_backward}"
+            f"QwenModel: Block swap enabled. Swapping {self.blocks_to_swap} blocks out of {self.num_blocks} blocks. Supports backward: {supports_backward}"
         )
 
     def switch_block_swap_for_inference(self):
         if self.blocks_to_swap:
             self.offloader.set_forward_only(True)
             self.prepare_block_swap_before_forward()
-            print(f"WanModel: Block swap set to forward only.")
+            print(f"QwenModel: Block swap set to forward only.")
 
     def switch_block_swap_for_training(self):
         if self.blocks_to_swap:
             self.offloader.set_forward_only(False)
             self.prepare_block_swap_before_forward()
-            print(f"WanModel: Block swap set to forward and backward.")
+            print(f"QwenModel: Block swap set to forward and backward.")
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
         # assume model is on cpu. do not move blocks to device to reduce temporary memory usage
