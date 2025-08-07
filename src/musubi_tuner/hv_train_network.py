@@ -841,7 +841,7 @@ class NetworkTrainer:
                         
                         t[logsnr_mask2] = t_logsnr2
 
-                    return t  # 0 to 1
+                return t  # 0 to 1
 
             t_min = args.min_timestep if args.min_timestep is not None else 0
             t_max = args.max_timestep if args.max_timestep is not None else 1000.0
