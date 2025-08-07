@@ -765,6 +765,8 @@ class NetworkTrainer:
             or args.timestep_sampling == "sigmoid"
             or args.timestep_sampling == "shift"
             or args.timestep_sampling == "flux_shift"
+            or args.timestep_sampling == "logsnr"
+            or args.timestep_sampling == "qinglong"
         ):
             if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
                 # Simple random t-based noise sampling
@@ -788,6 +790,54 @@ class NetworkTrainer:
                 logits_norm = logits_norm * args.sigmoid_scale  # larger scale for more uniform sampling
                 t = logits_norm.sigmoid()
                 t = (t * shift) / (1 + (shift - 1) * t)
+
+            elif args.timestep_sampling == "logsnr":
+                # https://arxiv.org/abs/2411.14793v3
+                logsnr = torch.normal(mean=args.logit_mean, std=args.logit_std, size=(batch_size,), device=device)
+                t = torch.sigmoid(-logsnr / 2)
+
+            elif args.timestep_sampling == "qinglong":
+                # Qinglong triple hybrid sampling: flux_shift:logsnr:logsnr2 = .80:.075:.125
+                # First decide which method to use for each sample independently
+                decision_t = torch.rand((batch_size,), device=device)
+                
+                # Create masks based on decision_t: .80 for flux_shift, 0.075 for logsnr, and 0.125 for logsnr2
+                flux_mask = decision_t < 0.80  # 80% for flux_shift
+                logsnr_mask = (decision_t >= 0.80) & (decision_t < 0.875)  # 7.5% for logsnr
+                logsnr_mask2 = decision_t >= 0.875  # 12.5% for logsnr with -logit_mean
+                
+                # Initialize output tensor
+                t = torch.zeros((batch_size,), device=device)
+                
+                # Generate flux_shift samples for selected indices (80%)
+                if flux_mask.any():
+                    flux_count = flux_mask.sum().item()
+                    h, w = latents.shape[-2:]
+                    mu = train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
+                    shift = math.exp(mu)
+                    
+                    logits_norm_flux = torch.randn(flux_count, device=device)
+                    logits_norm_flux = logits_norm_flux * args.sigmoid_scale
+                    t_flux = logits_norm_flux.sigmoid()
+                    t_flux = (t_flux * shift) / (1 + (shift - 1) * t_flux)
+                    
+                    t[flux_mask] = t_flux
+                
+                # Generate logsnr samples for selected indices (7.5%)
+                if logsnr_mask.any():
+                    logsnr_count = logsnr_mask.sum().item()
+                    logsnr = torch.normal(mean=args.logit_mean, std=args.logit_std, size=(logsnr_count,), device=device)
+                    t_logsnr = torch.sigmoid(-logsnr / 2)
+                    
+                    t[logsnr_mask] = t_logsnr
+                
+                # Generate logsnr2 samples with -logit_mean for selected indices (12.5%)
+                if logsnr_mask2.any():
+                    logsnr2_count = logsnr_mask2.sum().item()
+                    logsnr2 = torch.normal(mean=5.36, std=1.0, size=(logsnr2_count,), device=device)
+                    t_logsnr2 = torch.sigmoid(-logsnr2 / 2)
+                    
+                    t[logsnr_mask2] = t_logsnr2
 
             t_min = args.min_timestep if args.min_timestep is not None else 0
             t_max = args.max_timestep if args.max_timestep is not None else 1000.0
@@ -2380,7 +2430,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "logsnr", "qinglong"],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
