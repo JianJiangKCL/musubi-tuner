@@ -490,9 +490,9 @@ class GELU(nn.Module):
         self.approximate = approximate
 
     def gelu(self, gate: torch.Tensor) -> torch.Tensor:
-        if gate.device.type == "mps" and is_torch_version("<", "2.0.0"):
-            # fp16 gelu not supported on mps before torch 2.0
-            return F.gelu(gate.to(dtype=torch.float32), approximate=self.approximate).to(dtype=gate.dtype)
+        # if gate.device.type == "mps" and is_torch_version("<", "2.0.0"):
+        #     # fp16 gelu not supported on mps before torch 2.0
+        #     return F.gelu(gate.to(dtype=torch.float32), approximate=self.approximate).to(dtype=gate.dtype)
         return F.gelu(gate, approximate=self.approximate)
 
     def forward(self, hidden_states):
