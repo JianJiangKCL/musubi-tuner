@@ -14,6 +14,7 @@
 - [LoRA Post-Hoc EMA merging](#lora-post-hoc-ema-merging--loraのpost-hoc-emaマージ)
 - [MagCache](#magcache)
 - [Specify time step range for training](#specify-time-step-range-for-training--学習時のタイムステップ範囲の指定)
+- [Style-Friendly SNR Sampler](#style-friendly-snr-sampler)
 
 ## How to specify `network_args` / `network_args`の指定方法
 
@@ -728,6 +729,171 @@ Musubi TunerにMagCache機能を実装しました。一部のコードはMagCac
     - `--magcache_k`オプションは、キャッシュに使用するステップ数を制御します。デフォルト値は6で、これは連続する6ステップがキャッシュに使用されることを意味します。デフォルト値6は恐らく50ステップの場合の推奨値のため、ステップ数が少ない場合は減らすことを検討してください。
 
 生成サンプルは英語での説明を参照してください。
+
+</details>
+
+## Style-Friendly SNR Sampler
+
+This sampler is based on the paper [Style-Friendly SNR Sampler for Style-Driven Generation](https://arxiv.org/abs/2411.14793). The paper argues that stylistic features in diffusion models are predominantly learned at high noise levels. This sampler biases the noise level (timestep) sampling towards these higher noise levels, which can significantly improve the model's ability to learn and reproduce specific styles.
+
+This feature is enabled by specifying `--timestep_sampling`.
+
+<details>
+<summary>日本語</summary>
+
+このサンプラーは、論文「[Style-Friendly SNR Sampler for Style-Driven Generation](https://arxiv.org/abs/2411.14793)」に基づいています。この論文では、拡散モデルにおけるスタイル特徴は、主にノイズレベルが高い領域で学習されると主張しています。このサンプラーは、ノイズレベル（タイムステップ）のサンプリングを意図的に高ノイズレベル側に偏らせることで、モデルが特定のスタイルを学習・再現する能力を大幅に向上させることができます。
+
+この機能は `--timestep_sampling` を指定することで有効になります。
+</details>
+
+### `logsnr` Sampler
+
+This is a direct implementation of the sampler proposed in the paper. It samples the log-SNR value from a normal distribution. By setting a low mean and a large standard deviation, it focuses the training on high-noise levels crucial for style learning.
+
+To use this, specify `logsnr` for `--timestep_sampling`. You can also configure the mean and standard deviation of the log-SNR distribution with `--logit_mean` and `--logit_std`.
+
+The paper recommends `logit_mean=-6.0` and `logit_std` of 2.0 or 3.0.
+
+```bash
+accelerate launch ... \
+    --timestep_sampling logsnr \
+    --logit_mean -6.0 \
+    --logit_std 2.0
+```
+
+Following is the distribution of the logsnr sampler:
+
+![Distribution of logsnr sampler](logsnr_distribution.png)
+
+<details>
+<summary>日本語</summary>
+
+論文で提案された通りのサンプラーの実装です。log-SNR値を正規分布からサンプリングします。低い平均値と大きな標準偏差を設定することで、スタイルの学習に不可欠な高ノイズレベル領域に学習を集中させます。
+
+使用するには、`--timestep_sampling` に `logsnr` を指定します。また、`--logit_mean` と `--logit_std` でlog-SNR分布の平均と標準偏差を設定できます。
+
+論文では `logit_mean=-6.0`、`logit_std` は2.0または3.0が推奨されています。
+
+</details>
+
+
+### `qinglong` Sampler (Hybrid Sampler)
+
+This is a hybrid sampling method that combines three different samplers to balance style learning, model stability, and detail preservation. It is an experimental feature inspired by the Style-Friendly SNR Sampler. It was proposed by sdbds (Qing Long) in PR [#407](https://github.com/kohya-ss/musubi-tuner/pull/407). 
+
+In each training step, one of the following samplers is chosen for each sample in the batch based on a predefined ratio:
+
+1.  **flux_shift (80%)**: The standard sampler for high-resolution models. Focuses on overall stability.
+2.  **logsnr (7.5%)**: The Style-Friendly sampler. Focuses on style learning.
+3.  **logsnr2 (12.5%)**: A sampler that focuses on low-noise regions (high log-SNR values). Aims to improve the learning of fine details.
+
+To use this, specify `qinglong` for `--timestep_sampling`.
+
+```bash
+accelerate launch ... \
+    --timestep_sampling qinglong \
+    --logit_mean -6.0 \
+    --logit_std 2.0
+```
+
+Following is the distribution of the qinglong sampler:
+
+![Distribution of qinglong sampler](qinglong_distribution.png)
+
+<details>
+<summary>日本語</summary>
+
+これは、スタイルの学習、モデルの安定性、ディテールの再現性のバランスを取るために、3つの異なるサンプラーを組み合わせたハイブリッドサンプリング手法です。Style-Friendly SNR Samplerにインスパイアされた実験的な機能です。PR [#407](https://github.com/kohya-ss/musubi-tuner/pull/407) で sdbds (Qing Long) 氏により提案されました。
+
+各学習ステップにおいて、バッチ内の各サンプルに対して、あらかじめ定義された比率に基づき以下のいずれかのサンプラーが選択されます。
+
+1.  **flux_shift (80%)**: 高解像度モデル向けの標準的なサンプラー。全体的な安定性を重視します。
+2.  **logsnr (7.5%)**: Style-Friendlyサンプラー。スタイルの学習を重視します。
+3.  **logsnr2 (12.5%)**: 低ノイズ領域（高いlog-SNR値）に焦点を当てたサンプラー。細部のディテール学習を向上させることを目的とします。
+
+使用するには、`--timestep_sampling` に `qinglong` を指定します。
+</details>
+
+## Style-Friendly SNR Sampler
+
+This sampler is based on the paper [Style-Friendly SNR Sampler for Style-Driven Generation](https://arxiv.org/abs/2411.14793). The paper argues that stylistic features in diffusion models are predominantly learned at high noise levels. This sampler biases the noise level (timestep) sampling towards these higher noise levels, which can significantly improve the model's ability to learn and reproduce specific styles.
+
+This feature is enabled by specifying `--timestep_sampling`.
+
+<details>
+<summary>日本語</summary>
+
+このサンプラーは、論文「[Style-Friendly SNR Sampler for Style-Driven Generation](https://arxiv.org/abs/2411.14793)」に基づいています。この論文では、拡散モデルにおけるスタイル特徴は、主にノイズレベルが高い領域で学習されると主張しています。このサンプラーは、ノイズレベル（タイムステップ）のサンプリングを意図的に高ノイズレベル側に偏らせることで、モデルが特定のスタイルを学習・再現する能力を大幅に向上させることができます。
+
+この機能は `--timestep_sampling` を指定することで有効になります。
+</details>
+
+### `logsnr` Sampler
+
+This is a direct implementation of the sampler proposed in the paper. It samples the log-SNR value from a normal distribution. By setting a low mean and a large standard deviation, it focuses the training on high-noise levels crucial for style learning.
+
+To use this, specify `logsnr` for `--timestep_sampling`. You can also configure the mean and standard deviation of the log-SNR distribution with `--logit_mean` and `--logit_std`.
+
+The paper recommends `logit_mean=-6.0` and `logit_std` of 2.0 or 3.0.
+
+```bash
+accelerate launch ... \
+    --timestep_sampling logsnr \
+    --logit_mean -6.0 \
+    --logit_std 2.0
+```
+
+Following is the distribution of the logsnr sampler:
+
+![Distribution of logsnr sampler](logsnr_distribution.png)
+
+<details>
+<summary>日本語</summary>
+
+論文で提案された通りのサンプラーの実装です。log-SNR値を正規分布からサンプリングします。低い平均値と大きな標準偏差を設定することで、スタイルの学習に不可欠な高ノイズレベル領域に学習を集中させます。
+
+使用するには、`--timestep_sampling` に `logsnr` を指定します。また、`--logit_mean` と `--logit_std` でlog-SNR分布の平均と標準偏差を設定できます。
+
+論文では `logit_mean=-6.0`、`logit_std` は2.0または3.0が推奨されています。
+
+</details>
+
+
+### `qinglong` Sampler (Hybrid Sampler)
+
+This is a hybrid sampling method that combines three different samplers to balance style learning, model stability, and detail preservation. It is an experimental feature inspired by the Style-Friendly SNR Sampler. It was proposed by sdbds (Qing Long) in PR [#407](https://github.com/kohya-ss/musubi-tuner/pull/407). 
+
+In each training step, one of the following samplers is chosen for each sample in the batch based on a predefined ratio:
+
+1.  **flux_shift (80%)**: The standard sampler for high-resolution models. Focuses on overall stability.
+2.  **logsnr (7.5%)**: The Style-Friendly sampler. Focuses on style learning.
+3.  **logsnr2 (12.5%)**: A sampler that focuses on low-noise regions (high log-SNR values). Aims to improve the learning of fine details.
+
+To use this, specify `qinglong` for `--timestep_sampling`.
+
+```bash
+accelerate launch ... \
+    --timestep_sampling qinglong \
+    --logit_mean -6.0 \
+    --logit_std 2.0
+```
+
+Following is the distribution of the qinglong sampler:
+
+![Distribution of qinglong sampler](qinglong_distribution.png)
+
+<details>
+<summary>日本語</summary>
+
+これは、スタイルの学習、モデルの安定性、ディテールの再現性のバランスを取るために、3つの異なるサンプラーを組み合わせたハイブリッドサンプリング手法です。Style-Friendly SNR Samplerにインスパイアされた実験的な機能です。PR [#407](https://github.com/kohya-ss/musubi-tuner/pull/407) で sdbds (Qing Long) 氏により提案されました。
+
+各学習ステップにおいて、バッチ内の各サンプルに対して、あらかじめ定義された比率に基づき以下のいずれかのサンプラーが選択されます。
+
+1.  **flux_shift (80%)**: 高解像度モデル向けの標準的なサンプラー。全体的な安定性を重視します。
+2.  **logsnr (7.5%)**: Style-Friendlyサンプラー。スタイルの学習を重視します。
+3.  **logsnr2 (12.5%)**: 低ノイズ領域（高いlog-SNR値）に焦点を当てたサンプラー。細部のディテール学習を向上させることを目的とします。
+
+使用するには、`--timestep_sampling` に `qinglong` を指定します。
 
 </details>
 
