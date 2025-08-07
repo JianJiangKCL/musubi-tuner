@@ -797,11 +797,11 @@ class NetworkTrainer:
                 t = torch.sigmoid(-logsnr / 2)
 
             elif args.timestep_sampling == "qinglong":
-                # Qinglong triple hybrid sampling: flux_shift:logsnr:logsnr2 = 1:7:2
+                # Qinglong triple hybrid sampling: flux_shift:logsnr:logsnr2 = .80:.075:.125
                 # First decide which method to use for each sample independently
                 decision_t = torch.rand((batch_size,), device=device)
                 
-                # Create masks based on 1:7:2 ratio
+                # Create masks based on decision_t: .80 for flux_shift, 0.075 for logsnr, and 0.125 for logsnr2
                 flux_mask = decision_t < 0.80  # 80% for flux_shift
                 logsnr_mask = (decision_t >= 0.80) & (decision_t < 0.875)  # 7.5% for logsnr
                 logsnr_mask2 = decision_t >= 0.875  # 12.5% for logsnr with -logit_mean
