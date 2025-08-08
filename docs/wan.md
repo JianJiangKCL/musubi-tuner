@@ -114,7 +114,7 @@ Latent pre-caching is almost the same as in HunyuanVideo. Create the cache using
 python src/musubi_tuner/wan_cache_latents.py --dataset_config path/to/toml --vae path/to/wan_vae.safetensors
 ```
 
-If you train I2V models, add `--i2v` option to the above command. For Wan2.1, add `--clip path/to/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth` to specify the CLIP model. If not specified, the training will raise an error. For Wan2.2, CLIP model is not required.
+**If you train I2V models, add `--i2v` option to the above command.** For Wan2.1, add `--clip path/to/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth` to specify the CLIP model. If not specified, the training will raise an error. For Wan2.2, CLIP model is not required.
 
 If you're running low on VRAM, specify `--vae_cache_cpu` to use the CPU for the VAE internal cache, which will reduce VRAM usage somewhat.
 
@@ -125,11 +125,12 @@ The control video settings are required for training the Fun-Control model. Plea
 
 latentの事前キャッシングはHunyuanVideoとほぼ同じです。上のコマンド例を使用してキャッシュを作成してください。
 
-I2Vモデルを学習する場合は、`--i2v` オプションを上のコマンドに追加してください。Wan2.1の場合は、`--clip path/to/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth` を追加してCLIPモデルを指定してください。指定しないと学習時にエラーが発生します。Wan2.2ではCLIPモデルは不要です。
+**I2Vモデルを学習する場合は、`--i2v` オプションを上のコマンドに追加してください。**Wan2.1の場合は、`--clip path/to/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth` を追加してCLIPモデルを指定してください。指定しないと学習時にエラーが発生します。Wan2.2ではCLIPモデルは不要です。
 
 VRAMが不足している場合は、`--vae_cache_cpu` を指定するとVAEの内部キャッシュにCPUを使うことで、使用VRAMを多少削減できます。
 
 Fun-Controlモデルを学習する場合は、制御用動画の設定が必要です。[データセット設定](/src/musubi_tuner/dataset/dataset_config.md#sample-for-video-dataset-with-control-images)を参照してください。
+
 </details>
 
 ### Text Encoder Output Pre-caching
@@ -146,11 +147,13 @@ For systems with limited VRAM (less than ~16GB), use `--fp8_t5` to run the T5 in
 
 <details>
 <summary>日本語</summary>
+
 テキストエンコーダ出力の事前キャッシングもHunyuanVideoとほぼ同じです。上のコマンド例を使用してキャッシュを作成してください。
 
 使用可能なVRAMに合わせて `--batch_size` を調整してください。
 
 VRAMが限られているシステム（約16GB未満）の場合は、T5をfp8モードで実行するために `--fp8_t5` を使用してください。
+
 </details>
 
 ## Training / 学習
@@ -177,19 +180,28 @@ For additional options, use `python src/musubi_tuner/wan_train_network.py --help
 
 `--task` is one of `t2v-1.3B`, `t2v-14B`, `i2v-14B`, `t2i-14B` (for Wan2.1 official models), `t2v-1.3B-FC`, `t2v-14B-FC`, and `i2v-14B-FC` (for Wan2.1 Fun Control model), `t2v-A14B`, `i2v-A14B` (for Wan2.2 14B models). Specify the DiT weights for the task with `--dit`.
 
-For Wan2.2 models, if you want to train with either the high-noise model or the low-noise model, specify the model with `--dit` as in Wan2.1. 
+You can limit the range of timesteps for training with `--min_timestep` and `--max_timestep`. The values are specified in the range of 0 to 1000 (not 0.0 to 1.0). See [here](./advanced_config.md#specify-time-step-range-for-training--学習時のタイムステップ範囲の指定) for details. 
 
-If you want to train LoRA for both models simultaneously, you need to specify the low-noise model with `--dit` and the high-noise model with `--dit_high_noise`. The two models are switched at the timestep specified by `--timestep_boundary`. The default value is 0.9 for I2V and 0.875 for T2V.
+For Wan2.2 models, if you want to train with either the high-noise model or the low-noise model, specify the model with `--dit` as in Wan2.1. In this case, it is recommended to specify the range of timesteps described in the table below, and `--preserve_distribution_shape` to maintain the distribution shape.
 
-When training Wan2.2 models, you can use `--offload_inactive_dit` to offload the inactive DiT model to the CPU, which can save VRAM (only works when `--blocks_to_swap` is not specified).
+If you want to train LoRA for both models simultaneously, you need to specify the low-noise model with `--dit` and the high-noise model with `--dit_high_noise`. The two models are switched at the timestep specified by `--timestep_boundary`. The default value is 0.9 for I2V and 0.875 for T2V. `--timestep_boundary` can be specified in the range of 0.0 to 1.0, or in the range of 0 to 1000.
 
-You can limit the range of timesteps for training with `--min_timestep` and `--max_timestep`. The values are specified in the range of 0 to 1000. See [here](./advanced_config.md#specify-time-step-range-for-training--学習時のタイムステップ範囲の指定) for details.
+When training Wan2.2 high and low models, you can use `--offload_inactive_dit` to offload the inactive DiT model to the CPU, which can save VRAM (only works when `--blocks_to_swap` is not specified).
 
 Don't forget to specify `--network_module networks.lora_wan`.
 
 Other options are mostly the same as `hv_train_network.py`.
 
 Use `convert_lora.py` for converting the LoRA weights after training, as in HunyuanVideo.
+
+#### Recommended Min/Max Timestep Settings for Wan2.2
+
+| Model | Min Timestep | Max Timestep |
+|-------|--------------|--------------|
+| I2V low noise  | 0            | 900         |
+| I2V high noise | 900          | 1000         |
+| T2V low noise  | 0            | 875         |
+| T2V high noise | 875          | 1000         |
 
 <details>
 <summary>日本語</summary>
@@ -202,19 +214,20 @@ Use `convert_lora.py` for converting the LoRA weights after training, as in Huny
 
 `--task` には `t2v-1.3B`, `t2v-14B`, `i2v-14B`, `t2i-14B` （これらはWan2.1公式モデル）、`t2v-1.3B-FC`, `t2v-14B-FC`, `i2v-14B-FC`（Wan2.1-Fun Controlモデル）、`t2v-A14B`, `i2v-A14B`（Wan2.2 14Bモデル）を指定します。`--dit`に、taskに応じたDiTの重みを指定してください。
 
-Wan2.2モデルの場合、高ノイズ用モデルまたは低ノイズ用モデルのどちらかで学習する場合は、Wan2.1の場合と同様に、`--dit`にそのモデルを指定してください。
-
-両方のモデルへのLoRAを学習する場合は、`--dit`に低ノイズ用モデルを、`--dit_high_noise`に高ノイズ用モデルを指定します。2つのモデルは`--timestep_boundary`で指定されたタイムステップで切り替わります。デフォルトはI2Vの場合は0.9、T2Vの場合は0.875です。
-
-Wan2.2モデルの学習時、`--offload_inactive_dit`を使用すると、使用していないDiTモデルをCPUにオフロードすることができ、VRAMを節約できます（`--blocks_to_swap`未指定時のみ有効）。
-
 `--min_timestep`と`--max_timestep`で学習するタイムステップの範囲を限定できます。値は0から1000の範囲で指定します。詳細は[こちら](./advanced_config.md#specify-time-step-range-for-training--学習時のタイムステップ範囲の指定)を参照してください。
+
+Wan2.2モデルの場合、高ノイズ用モデルまたは低ノイズ用モデルのどちらかで学習する場合は、Wan2.1の場合と同様に、`--dit`にそのモデルを指定してください。またこの場合、英語版サンプル内の表に示すようにタイムステップの範囲を指定し、`--preserve_distribution_shape` を指定して分布形状を維持することをお勧めします。
+
+両方のモデルへのLoRAを学習する場合は、`--dit`に低ノイズ用モデルを、`--dit_high_noise`に高ノイズ用モデルを指定します。2つのモデルは`--timestep_boundary`で指定されたタイムステップで切り替わります。デフォルトはI2Vの場合は0.9、T2Vの場合は0.875です。`--timestep_boundary`は0.0から1.0の範囲の値、または0から1000の範囲の値で指定できます。
+
+またWan2.2モデルで両方のモデルを学習するとき、`--offload_inactive_dit`を使用すると、使用していないDiTモデルをCPUにオフロードすることができ、VRAMを節約できます（`--blocks_to_swap`未指定時のみ有効）。
 
 `--network_module` に `networks.lora_wan` を指定することを忘れないでください。
 
 その他のオプションは、ほぼ`hv_train_network.py`と同様です。
 
 学習後のLoRAの重みの変換は、HunyuanVideoと同様に`convert_lora.py`を使用してください。
+
 </details>
 
 ### Command line options for training with sampling / サンプル画像生成に関連する学習時のコマンドラインオプション
@@ -235,11 +248,13 @@ You can specify the initial image, the negative prompt and the control video (fo
 
 <details>
 <summary>日本語</summary>
+
 各オプションは推論時、およびHunyuanVideoの場合と同様です。[こちら](/docs/sampling_during_training.md)を参照してください。
 
 Wan2.1のI2Vモデルを学習する場合は、`--clip path/to/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth` を追加してCLIPモデルを指定してください。Wan2.2ではCLIPモデルは不要です。
 
 プロンプトファイルで、初期画像やネガティブプロンプト、制御動画（Wan2.1-Fun-Control用）等を指定できます。[こちら](/docs/sampling_during_training.md#prompt-file--プロンプトファイル)を参照してください。
+
 </details>
 
 
