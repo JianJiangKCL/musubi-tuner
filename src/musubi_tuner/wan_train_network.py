@@ -1,5 +1,6 @@
 import argparse
-from typing import Optional
+import random
+from typing import List, Optional
 from PIL import Image
 
 import numpy as np
@@ -18,6 +19,7 @@ from musubi_tuner.hv_train_network import (
     read_config_from_file,
 )
 from musubi_tuner.modules.custom_offloading_utils import synchronize_device
+from musubi_tuner.modules.scheduling_flow_match_discrete import FlowMatchDiscreteScheduler
 from musubi_tuner.wan_generate_video import parse_one_frame_inference_args
 
 import logging
@@ -82,8 +84,14 @@ class WanNetworkTrainer(NetworkTrainer):
                 assert (
                     not args.offload_inactive_dit
                 ), "Block swap is not supported with offloading inactive DiT / 非アクティブDiTをオフロードする設定ではブロックスワップはサポートされていません"
+            if args.num_timestep_buckets is not None:
+                logger.warning(
+                    f"num_timestep_buckets is not working well with high and low models training / high and lowモデルのトレーニングではnum_timestep_bucketsがうまく機能しません"
+                )
 
-        self.timestep_boundary = args.timestep_boundary if args.timestep_boundary is not None else self.config.boundary  # may be None
+        self.timestep_boundary = (
+            args.timestep_boundary if args.timestep_boundary is not None else self.config.boundary
+        )  # may be None
         if self.timestep_boundary is None and self.high_low_training:
             raise ValueError(
                 "timestep_boundary is not specified for high noise model"
@@ -214,7 +222,7 @@ class WanNetworkTrainer(NetworkTrainer):
         device = accelerator.device
 
         if self.high_low_training:
-            self.next_model_is_high_noise = False # We use low noise model to sample the video
+            self.next_model_is_high_noise = False  # We use low noise model to sample the video
             self.swap_high_low_weights(args, accelerator, model)
 
         # TODO support different cfg_scale for low and high noise models
@@ -500,18 +508,23 @@ class WanNetworkTrainer(NetworkTrainer):
     def scale_shift_latents(self, latents):
         return latents
 
-    def get_noisy_model_input_and_timesteps(self, args, noise, latents, noise_scheduler, device, dtype):
+    def get_noisy_model_input_and_timesteps(
+        self,
+        args: argparse.Namespace,
+        noise: torch.Tensor,
+        latents: torch.Tensor,
+        timesteps: Optional[List[float]],
+        noise_scheduler: FlowMatchDiscreteScheduler,
+        device: torch.device,
+        dtype: torch.dtype,
+    ):
         if not self.high_low_training:
-            return super().get_noisy_model_input_and_timesteps(args, noise, latents, noise_scheduler, device, dtype)
-
-        # import time
-
-        # start_time = time.perf_counter()
+            return super().get_noisy_model_input_and_timesteps(args, noise, latents, timesteps, noise_scheduler, device, dtype)
 
         # high-low training case
         # call super to get the noisy model input and timesteps, and sample only the first one, and choose the model we want based on the timestep
         noisy_model_input, timesteps = super().get_noisy_model_input_and_timesteps(
-            args, noise[0:1], latents[0:1], noise_scheduler, device, dtype
+            args, noise[0:1], latents[0:1], timesteps[0:1] if timesteps is not None else None, noise_scheduler, device, dtype
         )
         high_noise = timesteps[0] / 1000.0 >= self.timestep_boundary
         self.next_model_is_high_noise = high_noise
@@ -524,11 +537,10 @@ class WanNetworkTrainer(NetworkTrainer):
         for i in range(bsize):
             for _ in range(num_max_calls):
                 noisy_model_input, timesteps = super().get_noisy_model_input_and_timesteps(
-                    args, noise[i : i + 1], latents[i : i + 1], noise_scheduler, device, dtype
+                    args, noise[i : i + 1], latents[i : i + 1], None, noise_scheduler, device, dtype
                 )
-                if (
-                    (high_noise and timesteps[0] / 1000.0 >= self.timestep_boundary)
-                    or (not high_noise and timesteps[0] / 1000.0 < self.timestep_boundary)
+                if (high_noise and timesteps[0] / 1000.0 >= self.timestep_boundary) or (
+                    not high_noise and timesteps[0] / 1000.0 < self.timestep_boundary
                 ):
                     final_noisy_model_inputs.append(noisy_model_input)
                     final_timesteps_list.append(timesteps)
@@ -538,24 +550,17 @@ class WanNetworkTrainer(NetworkTrainer):
             logger.warning(
                 f"No valid noisy model inputs found for bsize={bsize}, high_noise={high_noise}, timestep_boundary={self.timestep_boundary}"
             )
-            return super().get_noisy_model_input_and_timesteps(
-                args, noise, latents, noise_scheduler, device, dtype
-            )  # fall back to the original method
+            # fall back to the original method
+            return super().get_noisy_model_input_and_timesteps(args, noise, latents, None, noise_scheduler, device, dtype)
 
         # final noisy model input may have less than bsize elements, it will be fine for training
         final_noisy_model_input = torch.cat(final_noisy_model_inputs, dim=0)
         final_timesteps = torch.cat(final_timesteps_list, dim=0)
 
-        # end_time = time.perf_counter()
-        # print(f"get_noisy_model_input_and_timesteps took {end_time - start_time:.2f} seconds")
         return final_noisy_model_input, final_timesteps
 
     def swap_high_low_weights(self, args: argparse.Namespace, accelerator: Accelerator, model: WanModel):
         if self.current_model_is_high_noise != self.next_model_is_high_noise:
-            # import time
-
-            # start_time = time.perf_counter()
-
             if self.blocks_to_swap == 0:
                 # If offloading inactive DiT, move the model to CPU first
                 if args.offload_inactive_dit:
@@ -585,8 +590,6 @@ class WanNetworkTrainer(NetworkTrainer):
                 self.dit_inactive_state_dict = state_dict  # swap the state dict
 
             self.current_model_is_high_noise = self.next_model_is_high_noise
-            # end_time = time.perf_counter()
-            # print(f"Model swap took {end_time - start_time:.2f} seconds")
 
     def call_dit(
         self,
