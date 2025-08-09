@@ -944,6 +944,14 @@ class QwenImageTransformer2DModel(nn.Module):  # ModelMixin, ConfigMixin, PeftAd
     def device(self):
         return next(self.parameters()).device
 
+    def enable_gradient_checkpointing(self):
+        self.gradient_checkpointing = True
+        print("QwenModel: Gradient checkpointing enabled.")
+
+    def disable_gradient_checkpointing(self):
+        self.gradient_checkpointing = False
+        print("QwenModel: Gradient checkpointing disabled.")
+
     def enable_block_swap(self, blocks_to_swap: int, device: torch.device, supports_backward: bool):
         self.blocks_to_swap = blocks_to_swap
         self.num_blocks = len(self.transformer_blocks)
@@ -987,6 +995,9 @@ class QwenImageTransformer2DModel(nn.Module):  # ModelMixin, ConfigMixin, PeftAd
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
         self.offloader.prepare_block_devices_before_forward(self.transformer_blocks)
+
+    def _gradient_checkpointing_func(self, block, *args):
+        return torch.utils.checkpoint.checkpoint(block, *args, use_reentrant=False)
 
     def forward(
         self,
@@ -1056,7 +1067,6 @@ class QwenImageTransformer2DModel(nn.Module):  # ModelMixin, ConfigMixin, PeftAd
         )
 
         image_rotary_emb = self.pos_embed(img_shapes, txt_seq_lens, device=hidden_states.device)
-        img_rotary_emb, txt_rotary_emb = image_rotary_emb
 
         for index_block, block in enumerate(self.transformer_blocks):
             if self.blocks_to_swap:

@@ -10,7 +10,6 @@ from accelerate import init_empty_weights
 from diffusers.utils.torch_utils import randn_tensor
 
 from musubi_tuner.flux.flux_utils import is_fp8
-from musubi_tuner.modules.scheduling_flow_match_discrete import FlowMatchDiscreteScheduler
 from musubi_tuner.qwen_image.qwen_image_autoencoder_kl import AutoencoderKLQwenImage
 from musubi_tuner.utils.safetensors_utils import load_safetensors, load_split_weights
 
@@ -307,8 +306,12 @@ def load_qwen2_5_vl(
             def create_fn():
                 def _apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
                     mrope_section = mrope_section * 2
-                    cos = torch.cat([m[i % 3] for i, m in enumerate(cos.split(mrope_section, dim=-1))], dim=-1).unsqueeze(unsqueeze_dim)
-                    sin = torch.cat([m[i % 3] for i, m in enumerate(sin.split(mrope_section, dim=-1))], dim=-1).unsqueeze(unsqueeze_dim)
+                    cos = torch.cat([m[i % 3] for i, m in enumerate(cos.split(mrope_section, dim=-1))], dim=-1).unsqueeze(
+                        unsqueeze_dim
+                    )
+                    sin = torch.cat([m[i % 3] for i, m in enumerate(sin.split(mrope_section, dim=-1))], dim=-1).unsqueeze(
+                        unsqueeze_dim
+                    )
 
                     input_dtype = q.dtype
                     q = q.to(torch.float32)
@@ -318,6 +321,7 @@ def load_qwen2_5_vl(
                     q_embed = (q * cos) + (rotate_half(q) * sin)
                     k_embed = (k * cos) + (rotate_half(k) * sin)
                     return q_embed.to(input_dtype), k_embed.to(input_dtype)
+
                 return _apply_multimodal_rotary_pos_emb
 
             qwen2_5_vl_module.modeling_qwen2_5_vl.apply_multimodal_rotary_pos_emb = create_fn()
@@ -384,13 +388,14 @@ def get_qwen_prompt_embeds(
     return prompt_embeds, encoder_attention_mask
 
 
+"""
 def encode_prompt(
     vlm: Qwen2_5_VLForConditionalGeneration,
     prompt: Union[str, List[str]],
     prompt_embeds: Optional[torch.Tensor] = None,
     prompt_embeds_mask: Optional[torch.Tensor] = None,
 ):
-    r"""
+    r""
 
     Args:
         prompt (`str` or `List[str]`, *optional*):
@@ -398,7 +403,7 @@ def encode_prompt(
         prompt_embeds (`torch.Tensor`, *optional*):
             Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
             provided, text embeddings will be generated from `prompt` input argument.
-    """
+    ""
     # max_sequence_length: int = 1024,
     prompt = [prompt] if isinstance(prompt, str) else prompt
     batch_size = len(prompt) if prompt_embeds is None else prompt_embeds.shape[0]
@@ -411,7 +416,7 @@ def encode_prompt(
     prompt_embeds_mask = prompt_embeds_mask.view(batch_size, seq_len)
 
     return prompt_embeds, prompt_embeds_mask
-
+"""
 
 # endregion text encoder
 
@@ -501,7 +506,10 @@ def load_vae(vae_path: str, device: Union[str, torch.device] = "cpu", disable_mm
     return vae
 
 
-def unpack_latents(latents, height, width, vae_scale_factor=VAE_SCALE_FACTOR):
+def unpack_latents(latents, height, width, vae_scale_factor=VAE_SCALE_FACTOR) -> torch.Tensor:
+    """
+    Returns (B, C, 1, H, W)
+    """
     batch_size, num_patches, channels = latents.shape
 
     # VAE applies 8x compression on images but we must also account for packing which requires
@@ -528,6 +536,10 @@ def unpack_latents(latents, height, width, vae_scale_factor=VAE_SCALE_FACTOR):
 
 
 def pack_latents(latents, batch_size, num_channels_latents, height, width):
+    """
+    This function handles (B, 1, C, H, W) and (B, C, H, W) latents. So the logic is a bit weird.
+    It packs the latents into a shape of (B, H/2, W/2, C*4, 2, 2) and then reshapes it to (B, H/2 * W/2, C*4) = (B, Seq, In-Channels)
+    """
     latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
     latents = latents.permute(0, 2, 4, 1, 3, 5)
     latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
@@ -542,7 +554,8 @@ def prepare_latents(batch_size, num_channels_latents, height, width, dtype, devi
     height = 2 * (int(height) // (vae_scale_factor * 2))
     width = 2 * (int(width) // (vae_scale_factor * 2))
 
-    shape = (batch_size, 1, num_channels_latents, height, width)
+    # kohya-ss: This is original implementations, but it will be better (B, C, 1, H, W). The latents is packed to (B,S,D) though.
+    shape = (batch_size, 1, num_channels_latents, height, width) 
 
     if isinstance(generator, list) and len(generator) != batch_size:
         raise ValueError(
@@ -1135,7 +1148,8 @@ def get_scheduler(shift: Optional[float] = None) -> FlowMatchEulerDiscreteSchedu
     scheduler = FlowMatchEulerDiscreteScheduler(
         config["num_train_timesteps"],
         shift=config["shift"] if shift is None else shift,
-        use_dynamic_shifting=config["use_dynamic_shifting"],
+        # use_dynamic_shifting=config["use_dynamic_shifting"],
+        use_dynamic_shifting=True if shift is None else False,
         base_shift=config["base_shift"],
         max_shift=config["max_shift"],
         base_image_seq_len=config["base_image_seq_len"],

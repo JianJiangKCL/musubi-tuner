@@ -28,7 +28,7 @@ try:
 except:
     pass
 
-from musubi_tuner.networks import lora_flux
+from musubi_tuner.networks import lora_qwen_image
 from musubi_tuner.utils.device_utils import clean_memory_on_device
 from musubi_tuner.hv_generate_video import get_time_flag, save_images_grid, synchronize_device
 from musubi_tuner.wan_generate_video import merge_lora_weights
@@ -279,21 +279,21 @@ def load_dit_model(
         lora_multipliers=args.lora_multiplier,
     )
 
-    # # merge LoRA weights
-    # if args.lycoris:
-    #     if args.lora_weight is not None and len(args.lora_weight) > 0:
-    #         merge_lora_weights(lora_wan, model, args, device)
+    # merge LoRA weights
+    if args.lycoris:
+        if args.lora_weight is not None and len(args.lora_weight) > 0:
+            merge_lora_weights(lora_qwen_image, model, args, device)
 
-    #     if args.fp8_scaled:
-    #         # load state dict as-is and optimize to fp8
-    #         state_dict = model.state_dict()
+        if args.fp8_scaled:
+            # load state dict as-is and optimize to fp8
+            state_dict = model.state_dict()
 
-    #         # if no blocks to swap, we can move the weights to GPU after optimization on GPU (omit redundant CPU->GPU copy)
-    #         move_to_device = args.blocks_to_swap == 0  # if blocks_to_swap > 0, we will keep the model on CPU
-    #         state_dict = model.fp8_optimization(state_dict, device, move_to_device, use_scaled_mm=args.fp8_fast)
+            # if no blocks to swap, we can move the weights to GPU after optimization on GPU (omit redundant CPU->GPU copy)
+            move_to_device = args.blocks_to_swap == 0  # if blocks_to_swap > 0, we will keep the model on CPU
+            state_dict = model.fp8_optimization(state_dict, device, move_to_device, use_scaled_mm=args.fp8_fast)
 
-    #         info = model.load_state_dict(state_dict, strict=True, assign=True)
-    #         logger.info(f"Loaded FP8 optimized weights: {info}")
+            info = model.load_state_dict(state_dict, strict=True, assign=True)
+            logger.info(f"Loaded FP8 optimized weights: {info}")
 
     # if we only want to save the model, we can skip the rest
     if args.save_merged_model:
@@ -446,9 +446,9 @@ def prepare_text_inputs(
         conds_cache[negative_prompt] = (negative_embed, negative_mask)
 
     if not (shared_models and "text_encoder" in shared_models):  # if loaded locally
-        # # FIX ME When fp8_vl, there is a bug text_encoder is not freed from GPU memory. So we move it to CPU as a workaround
-        # text_encoder.to("cpu")
+        # There is a bug text_encoder is not freed from GPU memory when text encoder is fp8
         del tokenizer, text_encoder
+        gc.collect()  # This may force Text Encoder to be freed from GPU memory
     else:  # if shared, move back to original device (likely CPU)
         if text_encoder:
             text_encoder.to(text_encoder_original_device)
@@ -503,6 +503,7 @@ def generate(
             # the dtype of VAE weights is float32, but we can load it as bfloat16 for better performance in future
             # vae_instance_for_return = flux_utils.load_ae(args.vae, dtype=torch.float32, device=device, disable_mmap=True)
             vae_instance_for_return = qwen_image_utils.load_vae(args.vae, device=device, disable_mmap=True)
+            vae_instance_for_return.eval()
 
             context, context_null = prepare_text_inputs(args, device, shared_models)
     height, width = check_inputs(args)
@@ -538,6 +539,15 @@ def generate(
     negative_embed = context_null["embed"].to(device, dtype=torch.bfloat16)
     negative_mask = context_null["mask"].to(device, dtype=torch.bfloat16)
 
+    # The batch size is 1, so we can trim embeds as the length of the prompt
+    txt_seq_lens = mask.sum(dim=1).to(torch.int64).tolist()
+    embed = embed[:, : txt_seq_lens[0], :]
+    mask = None
+
+    negative_txt_seq_lens = negative_mask.sum(dim=1).to(torch.int64).tolist()
+    negative_embed = negative_embed[:, : negative_txt_seq_lens[0], :]
+    negative_mask = None
+
     # 4. Prepare latent variables
     num_channels_latents = model.in_channels // 4
     latents = qwen_image_utils.prepare_latents(1, num_channels_latents, height, width, torch.bfloat16, device, seed_g)
@@ -549,6 +559,7 @@ def generate(
     image_seq_len = latents.shape[1]
 
     mu = qwen_image_utils.calculate_shift_qwen_image(image_seq_len)
+    print(f"Using mu={mu} for FlowMatchingDiscreteScheduler")
     scheduler = qwen_image_utils.get_scheduler(args.flow_shift)
     # mu is kwarg for FlowMatchingDiscreteScheduler
     timesteps, n = qwen_image_utils.retrieve_timesteps(scheduler, num_inference_steps, device, sigmas=sigmas, mu=mu)
@@ -574,7 +585,7 @@ def generate(
                     encoder_hidden_states_mask=mask,
                     encoder_hidden_states=embed,
                     img_shapes=img_shapes,
-                    txt_seq_lens=mask.sum(dim=1).to(torch.int64).tolist(),
+                    txt_seq_lens=txt_seq_lens,
                 )[0]
 
             if do_cfg:
@@ -586,7 +597,7 @@ def generate(
                         encoder_hidden_states_mask=negative_mask,
                         encoder_hidden_states=negative_embed,
                         img_shapes=img_shapes,
-                        txt_seq_lens=negative_mask.sum(dim=1).to(torch.int64).tolist(),
+                        txt_seq_lens=negative_txt_seq_lens,
                     )[0]
                 comb_pred = neg_noise_pred + args.guidance_scale * (noise_pred - neg_noise_pred)
 
@@ -597,7 +608,6 @@ def generate(
             # compute the previous noisy sample x_t -> x_t-1
             latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
-            # call the callback, if provided
             if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
                 pbar.update()
 
@@ -780,6 +790,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
     # 1. Prepare VAE
     logger.info("Loading VAE for batch generation...")
     vae_for_batch = qwen_image_utils.load_vae(args.vae, device="cpu", disable_mmap=True)
+    vae_for_batch.eval()
 
     all_prompt_args_list = [apply_overrides(args, pd) for pd in prompts_data]  # Create all arg instances first
     for prompt_args in all_prompt_args_list:
@@ -817,6 +828,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
 
     # Models should be removed from device after prepare_text_inputs
     del tokenizer_batch, text_encoder_batch, temp_shared_models_txt, conds_cache_batch
+    gc.collect()  # Force cleanup of Text Encoder from GPU memory
     clean_memory_on_device(device)
 
     # 3. Load DiT Model once
@@ -1036,6 +1048,7 @@ def main():
             args.seed = seeds[i]
 
             vae = qwen_image_utils.load_vae(args.vae, device=device, disable_mmap=True)
+            vae.eval()
             save_output(args, vae, latent, device, original_base_names)
 
     elif args.from_file:
