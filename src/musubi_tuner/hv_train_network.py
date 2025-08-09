@@ -802,43 +802,43 @@ class NetworkTrainer:
                     # Qinglong triple hybrid sampling: flux_shift:logsnr:logsnr2 = .80:.075:.125
                     # First decide which method to use for each sample independently
                     decision_t = torch.rand((batch_size,), device=device)
-                    
+
                     # Create masks based on decision_t: .80 for flux_shift, 0.075 for logsnr, and 0.125 for logsnr2
                     flux_mask = decision_t < 0.80  # 80% for flux_shift
                     logsnr_mask = (decision_t >= 0.80) & (decision_t < 0.875)  # 7.5% for logsnr
                     logsnr_mask2 = decision_t >= 0.875  # 12.5% for logsnr with -logit_mean
-                    
+
                     # Initialize output tensor
                     t = torch.zeros((batch_size,), device=device)
-                    
+
                     # Generate flux_shift samples for selected indices (80%)
                     if flux_mask.any():
                         flux_count = flux_mask.sum().item()
                         h, w = latents.shape[-2:]
                         mu = train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
                         shift = math.exp(mu)
-                        
+
                         logits_norm_flux = torch.randn(flux_count, device=device)
                         logits_norm_flux = logits_norm_flux * args.sigmoid_scale
                         t_flux = logits_norm_flux.sigmoid()
                         t_flux = (t_flux * shift) / (1 + (shift - 1) * t_flux)
-                        
+
                         t[flux_mask] = t_flux
-                    
+
                     # Generate logsnr samples for selected indices (7.5%)
                     if logsnr_mask.any():
                         logsnr_count = logsnr_mask.sum().item()
                         logsnr = torch.normal(mean=args.logit_mean, std=args.logit_std, size=(logsnr_count,), device=device)
                         t_logsnr = torch.sigmoid(-logsnr / 2)
-                        
+
                         t[logsnr_mask] = t_logsnr
-                    
+
                     # Generate logsnr2 samples with -logit_mean for selected indices (12.5%)
                     if logsnr_mask2.any():
                         logsnr2_count = logsnr_mask2.sum().item()
                         logsnr2 = torch.normal(mean=5.36, std=1.0, size=(logsnr2_count,), device=device)
                         t_logsnr2 = torch.sigmoid(-logsnr2 / 2)
-                        
+
                         t[logsnr_mask2] = t_logsnr2
 
                 return t  # 0 to 1
@@ -1138,10 +1138,27 @@ class NetworkTrainer:
         save_path = (
             f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{prompt_idx:02d}_{ts_str}{seed_suffix}"
         )
+
+        wandb_tracker = None
+        try:
+            wandb_tracker = accelerator.get_tracker("wandb")  # raises ValueError if wandb is not initialized
+            try:
+                import wandb
+            except ImportError:
+                raise ImportError("No wandb / wandb がインストールされていないようです")
+        except:  # wandb 無効時
+            pass
+
         if video.shape[2] == 1:
-            save_images_grid(video, save_dir, save_path, create_subdir=False)
+            image_paths = save_images_grid(video, save_dir, save_path, create_subdir=False)
+            if wandb_tracker is not None:
+                for image_path in image_paths:
+                    wandb_tracker.log({f"sample_{prompt_idx}": wandb.Image(image_path)}, step=steps)
         else:
-            save_videos_grid(video, os.path.join(save_dir, save_path) + ".mp4")
+            video_path = os.path.join(save_dir, save_path) + ".mp4"
+            save_videos_grid(video, video_path)
+            if wandb_tracker is not None:
+                wandb_tracker.log({f"sample_{prompt_idx}": wandb.Video(video_path)}, step=steps)
 
         # Move models back to initial state
         vae.to("cpu")
