@@ -523,10 +523,10 @@ class WanNetworkTrainer(NetworkTrainer):
 
         # high-low training case
         # call super to get the noisy model input and timesteps, and sample only the first one, and choose the model we want based on the timestep
-        noisy_model_input, timesteps = super().get_noisy_model_input_and_timesteps(
+        noisy_model_input, sample_timesteps = super().get_noisy_model_input_and_timesteps(
             args, noise[0:1], latents[0:1], timesteps[0:1] if timesteps is not None else None, noise_scheduler, device, dtype
         )
-        high_noise = timesteps[0] / 1000.0 >= self.timestep_boundary
+        high_noise = sample_timesteps[0] / 1000.0 >= self.timestep_boundary
         self.next_model_is_high_noise = high_noise
 
         # choose each member of latents for high or low noise model. because we want to train all the latents
@@ -536,14 +536,16 @@ class WanNetworkTrainer(NetworkTrainer):
         bsize = latents.shape[0]
         for i in range(bsize):
             for _ in range(num_max_calls):
-                noisy_model_input, timesteps = super().get_noisy_model_input_and_timesteps(
-                    args, noise[i : i + 1], latents[i : i + 1], None, noise_scheduler, device, dtype
+                ts_i = [self.get_bucketed_timestep()]
+
+                noisy_model_input, ts_i = super().get_noisy_model_input_and_timesteps(
+                    args, noise[i : i + 1], latents[i : i + 1], ts_i, noise_scheduler, device, dtype
                 )
-                if (high_noise and timesteps[0] / 1000.0 >= self.timestep_boundary) or (
-                    not high_noise and timesteps[0] / 1000.0 < self.timestep_boundary
+                if (high_noise and ts_i[0] / 1000.0 >= self.timestep_boundary) or (
+                    not high_noise and ts_i[0] / 1000.0 < self.timestep_boundary
                 ):
                     final_noisy_model_inputs.append(noisy_model_input)
-                    final_timesteps_list.append(timesteps)
+                    final_timesteps_list.append(ts_i)
                     break
 
         if len(final_noisy_model_inputs) < bsize:
@@ -551,7 +553,7 @@ class WanNetworkTrainer(NetworkTrainer):
                 f"No valid noisy model inputs found for bsize={bsize}, high_noise={high_noise}, timestep_boundary={self.timestep_boundary}"
             )
             # fall back to the original method
-            return super().get_noisy_model_input_and_timesteps(args, noise, latents, None, noise_scheduler, device, dtype)
+            return super().get_noisy_model_input_and_timesteps(args, noise, latents, timesteps, noise_scheduler, device, dtype)
 
         # final noisy model input may have less than bsize elements, it will be fine for training
         final_noisy_model_input = torch.cat(final_noisy_model_inputs, dim=0)

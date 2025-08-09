@@ -375,6 +375,8 @@ def should_sample_images(args, steps, epoch=None):
 class NetworkTrainer:
     def __init__(self):
         self.blocks_to_swap = None
+        self.timestep_range_pool = []
+        self.num_timestep_buckets = None  # for get_bucketed_timestep()
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -749,6 +751,20 @@ class NetworkTrainer:
 
         return True
 
+    def get_bucketed_timestep(self) -> float:
+        if self.num_timestep_buckets is None or self.num_timestep_buckets <= 1:
+            return random.random()
+
+        if len(self.timestep_range_pool) == 0:
+            bucket_size = 1.0 / self.num_timestep_buckets
+            for i in range(self.num_timestep_buckets):
+                self.timestep_range_pool.append((i * bucket_size, (i + 1) * bucket_size))
+            random.shuffle(self.timestep_range_pool)
+
+        # print(f"timestep_range_pool: {self.timestep_range_pool}")
+        a, b = self.timestep_range_pool.pop()
+        return random.uniform(a, b)
+
     def get_noisy_model_input_and_timesteps(
         self,
         args: argparse.Namespace,
@@ -806,13 +822,13 @@ class NetworkTrainer:
             or args.timestep_sampling == "qinglong"
         ):
 
-            def get_timesteps():
+            def compute_sampling_timesteps(org_timesteps: torch.Tensor) -> torch.Tensor:
                 if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
                     # Simple random t-based noise sampling
                     if args.timestep_sampling == "sigmoid":
-                        t = torch.sigmoid(args.sigmoid_scale * uniform_to_normal_ppF(timesteps))
+                        t = torch.sigmoid(args.sigmoid_scale * uniform_to_normal_ppF(org_timesteps))
                     else:
-                        t = timesteps
+                        t = org_timesteps
 
                 elif args.timestep_sampling == "shift" or args.timestep_sampling == "flux_shift":
                     if args.timestep_sampling == "shift":
@@ -825,7 +841,7 @@ class NetworkTrainer:
                         #     return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma) # sigma=1.0
                         shift = math.exp(mu)
 
-                    logits_norm = uniform_to_normal_ppF(timesteps)
+                    logits_norm = uniform_to_normal_ppF(org_timesteps)
                     logits_norm = logits_norm * args.sigmoid_scale  # larger scale for more uniform sampling
                     t = logits_norm.sigmoid()
                     t = (t * shift) / (1 + (shift - 1) * t)
@@ -833,7 +849,7 @@ class NetworkTrainer:
                 elif args.timestep_sampling == "logsnr":
                     # https://arxiv.org/abs/2411.14793v3
                     # logsnr = torch.normal(mean=args.logit_mean, std=args.logit_std, size=(batch_size,), device=device)
-                    logsnr = uniform_to_logsnr_ppF_pytorch(timesteps, args.logit_mean, args.logit_std)
+                    logsnr = uniform_to_logsnr_ppF_pytorch(org_timesteps, args.logit_mean, args.logit_std)
                     t = torch.sigmoid(-logsnr / 2)
 
                 elif args.timestep_sampling == "qinglong":
@@ -857,7 +873,7 @@ class NetworkTrainer:
                         shift = math.exp(mu)
 
                         # logits_norm_flux = torch.randn(flux_count, device=device)
-                        logits_norm_flux = uniform_to_normal_ppF(timesteps[flux_mask])
+                        logits_norm_flux = uniform_to_normal_ppF(org_timesteps[flux_mask])
                         logits_norm_flux = logits_norm_flux * args.sigmoid_scale
                         t_flux = logits_norm_flux.sigmoid()
                         t_flux = (t_flux * shift) / (1 + (shift - 1) * t_flux)
@@ -868,7 +884,7 @@ class NetworkTrainer:
                     if logsnr_mask.any():
                         # logsnr_count = logsnr_mask.sum().item()
                         # logsnr = torch.normal(mean=args.logit_mean, std=args.logit_std, size=(logsnr_count,), device=device)
-                        logsnr = uniform_to_logsnr_ppF_pytorch(timesteps[logsnr_mask], args.logit_mean, args.logit_std)
+                        logsnr = uniform_to_logsnr_ppF_pytorch(org_timesteps[logsnr_mask], args.logit_mean, args.logit_std)
                         t_logsnr = torch.sigmoid(-logsnr / 2)
 
                         t[logsnr_mask] = t_logsnr
@@ -877,7 +893,7 @@ class NetworkTrainer:
                     if logsnr_mask2.any():
                         # logsnr2_count = logsnr_mask2.sum().item()
                         # logsnr2 = torch.normal(mean=5.36, std=1.0, size=(logsnr2_count,), device=device)
-                        logsnr2 = uniform_to_logsnr_ppF_pytorch(timesteps[logsnr_mask2], 5.36, 1.0)
+                        logsnr2 = uniform_to_logsnr_ppF_pytorch(org_timesteps[logsnr_mask2], 5.36, 1.0)
                         t_logsnr2 = torch.sigmoid(-logsnr2 / 2)
 
                         t[logsnr_mask2] = t_logsnr2
@@ -890,13 +906,15 @@ class NetworkTrainer:
             t_max /= 1000.0
 
             if not args.preserve_distribution_shape:
-                t = get_timesteps()
+                t = compute_sampling_timesteps(timesteps)
                 t = t * (t_max - t_min) + t_min  # scale to [t_min, t_max], default [0, 1]
             else:
                 max_loops = 1000
                 available_t = []
                 for i in range(max_loops):
-                    t = get_timesteps()
+                    t = compute_sampling_timesteps(
+                        torch.tensor([self.get_bucketed_timestep() for _ in range(batch_size)], device=device)
+                    )
                     for t_i in t:
                         if t_min <= t_i <= t_max:
                             available_t.append(t_i)
@@ -908,7 +926,7 @@ class NetworkTrainer:
                     logger.warning(
                         f"Could not sample {batch_size} valid timesteps in {max_loops} loops / {max_loops}ループで{batch_size}個の有効なタイムステップをサンプリングできませんでした"
                     )
-                    available_t = get_timesteps()
+                    available_t = compute_sampling_timesteps(timesteps)
                 else:
                     t = torch.stack(available_t, dim=0)  # [batch_size, ]
 
@@ -1572,10 +1590,8 @@ class NetworkTrainer:
 
         # Load dataset config
         if args.num_timestep_buckets is not None:
-            assert (
-                not args.preserve_distribution_shape
-            ), "preserve_distribution_shape cannot be used with timestep bucketing / preserve_distribution_shapeはタイムステップバケット化と一緒に使用できません"
             logger.info(f"Using timestep bucketing. Number of buckets: {args.num_timestep_buckets}")
+        self.num_timestep_buckets = args.num_timestep_buckets if args.num_timestep_buckets is not None else 0
 
         blueprint_generator = BlueprintGenerator(ConfigSanitizer())
         logger.info(f"Load dataset config from {args.dataset_config}")
