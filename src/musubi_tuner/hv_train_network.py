@@ -376,7 +376,7 @@ class NetworkTrainer:
     def __init__(self):
         self.blocks_to_swap = None
         self.timestep_range_pool = []
-        self.num_timestep_buckets = None  # for get_bucketed_timestep()
+        self.num_timestep_buckets: int = 0  # for get_bucketed_timestep()
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -752,7 +752,7 @@ class NetworkTrainer:
         return True
 
     def get_bucketed_timestep(self) -> float:
-        if self.num_timestep_buckets is None or self.num_timestep_buckets <= 1:
+        if self.num_timestep_buckets <= 1:
             return random.random()
 
         if len(self.timestep_range_pool) == 0:
@@ -784,6 +784,9 @@ class NetworkTrainer:
 
         timesteps = torch.tensor(timesteps, device=device)
 
+        # This function converts uniform distribution samples to logistic distribution samples.
+        # The final distribution of the samples after shifting significantly differs from the original normal distribution.
+        # So we cannot use this.
         # def uniform_to_normal(t_samples: torch.Tensor) -> torch.Tensor:
         #     # Clip small values to prevent log(0)
         #     eps = 1e-7
@@ -857,12 +860,10 @@ class NetworkTrainer:
                     # First decide which method to use for each sample independently
                     decision_t = torch.rand((batch_size,), device=device)
 
-
                     # Create masks based on decision_t: .80 for flux_shift, 0.075 for logsnr, and 0.125 for logsnr2
                     flux_mask = decision_t < 0.80  # 80% for flux_shift
                     logsnr_mask = (decision_t >= 0.80) & (decision_t < 0.875)  # 7.5% for logsnr
                     logsnr_mask2 = decision_t >= 0.875  # 12.5% for logsnr with -logit_mean
-
 
                     # Initialize output tensor
                     t = torch.zeros((batch_size,), device=device)
@@ -880,9 +881,7 @@ class NetworkTrainer:
                         t_flux = logits_norm_flux.sigmoid()
                         t_flux = (t_flux * shift) / (1 + (shift - 1) * t_flux)
 
-
                         t[flux_mask] = t_flux
-
 
                     # Generate logsnr samples for selected indices (7.5%)
                     if logsnr_mask.any():
@@ -891,9 +890,7 @@ class NetworkTrainer:
                         logsnr = uniform_to_logsnr_ppF_pytorch(org_timesteps[logsnr_mask], args.logit_mean, args.logit_std)
                         t_logsnr = torch.sigmoid(-logsnr / 2)
 
-
                         t[logsnr_mask] = t_logsnr
-
 
                     # Generate logsnr2 samples with -logit_mean for selected indices (12.5%)
                     if logsnr_mask2.any():
@@ -901,7 +898,6 @@ class NetworkTrainer:
                         # logsnr2 = torch.normal(mean=5.36, std=1.0, size=(logsnr2_count,), device=device)
                         logsnr2 = uniform_to_logsnr_ppF_pytorch(org_timesteps[logsnr_mask2], 5.36, 1.0)
                         t_logsnr2 = torch.sigmoid(-logsnr2 / 2)
-
 
                         t[logsnr_mask2] = t_logsnr2
 
