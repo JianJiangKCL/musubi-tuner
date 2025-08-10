@@ -188,6 +188,8 @@ If you want to train LoRA for both models simultaneously, you need to specify th
 
 When training Wan2.2 high and low models, you can use `--offload_inactive_dit` to offload the inactive DiT model to the CPU, which can save VRAM (only works when `--blocks_to_swap` is not specified).
 
+For Wan2.2 models, `--discrete_flow_shift` may need to be adjusted based on I2V and T2V. According to the official implementation, the shift values in inference are 12.0 for T2V and 5.0 for I2V. The shift values during training do not necessarily have to match those during inference, but they may serve as a useful reference.
+
 Don't forget to specify `--network_module networks.lora_wan`.
 
 Other options are mostly the same as `hv_train_network.py`.
@@ -221,6 +223,8 @@ Wan2.2モデルの場合、高ノイズ用モデルまたは低ノイズ用モ�
 両方のモデルへのLoRAを学習する場合は、`--dit`に低ノイズ用モデルを、`--dit_high_noise`に高ノイズ用モデルを指定します。2つのモデルは`--timestep_boundary`で指定されたタイムステップで切り替わります。デフォルトはI2Vの場合は0.9、T2Vの場合は0.875です。`--timestep_boundary`は0.0から1.0の範囲の値、または0から1000の範囲の値で指定できます。
 
 またWan2.2モデルで両方のモデルを学習するとき、`--offload_inactive_dit`を使用すると、使用していないDiTモデルをCPUにオフロードすることができ、VRAMを節約できます（`--blocks_to_swap`未指定時のみ有効）。
+
+Wan2.2の場合、I2VとT2Vで`--discrete_flow_shift`を調整する必要があるかもしれません。公式実装によると、推論時のシフト値はT2Vで12.0、I2Vで5.0です。学習時のシフト値は推論時度必ずしも合わせる必要はありませんが、参考になるかもしれません。
 
 `--network_module` に `networks.lora_wan` を指定することを忘れないでください。
 
