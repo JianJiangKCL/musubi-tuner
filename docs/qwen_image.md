@@ -81,6 +81,7 @@ python src/musubi_tuner/qwen_image_cache_text_encoder_outputs.py \
 - `qwen_image_cache_text_encoder_outputs.py`を使用します。
 - `--text_encoder` (Qwen2.5-VL) 引数が必要です。
 - VRAMを節約するために、fp8 でテキストエンコーダを実行する`--fp8_vl`オプションが使用可能です。VRAMが16GB未満のGPU向けです。
+
 </details>
 
 ## Training / 学習
@@ -200,6 +201,7 @@ python src/musubi_tuner/qwen_image_generate_image.py \
 - `--prompt`: Prompt for generation.
 - `--guidance_scale` controls the classifier-free guidance scale.
 - Memory saving options like `--fp8_scaled` (for DiT) are available.
+- `--text_encoder_cpu` enables CPU inference for the text encoder. Recommended for systems with limited GPU resources (less than 16GB VRAM).
 - LoRA loading options (`--lora_weight`, `--lora_multiplier`) are available.
 
 You can specify the discrete flow shift using `--flow_shift`. If omitted, the default value (dynamic shifting based on the image size) will be used.
@@ -217,6 +219,7 @@ Qwen-Imageの推論は専用のスクリプト`qwen_image_generate_image.py`を�
 - `--prompt`: 生成用のプロンプトです。
 - `--guidance_scale`は、classifier-freeガイダンスのスケールを制御します。
 - DiTのメモリ使用量を削減するために、`--fp8_scaled`オプションを指定可能です。
+- `--text_encoder_cpu`を指定するとテキストエンコーダーをCPUで推論します。GPUのVRAMが16GB未満のシステムでは、CPU推論を推奨します。
 - LoRAの読み込みオプション（`--lora_weight`、`--lora_multiplier`）が利用可能です。
 
 `--flow_shift`を指定することで、離散フローシフトを設定できます。省略すると、デフォルト値（画像サイズに基づく動的シフト）が使用されます。
