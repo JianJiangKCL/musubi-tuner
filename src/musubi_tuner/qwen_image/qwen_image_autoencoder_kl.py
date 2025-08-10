@@ -1012,6 +1012,37 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
         image = self.decode(latents, return_dict=False)[0][:, :, 0]  # -1 to 1
         return (image * 0.5 + 0.5).clamp(0.0, 1.0)  # Convert to [0, 1] range
 
+    def encode_pixels_to_latents(self, pixels: torch.Tensor) -> torch.Tensor:
+        """
+        Convert pixel values to latents and apply normalization using mean/std.
+
+        Args:
+            pixels (torch.Tensor): Input pixels in [0, 1] range with shape [B, C, H, W] or [B, C, T, H, W]
+
+        Returns:
+            torch.Tensor: Normalized latents
+        """
+        # # Convert from [0, 1] to [-1, 1] range
+        # pixels = (pixels * 2.0 - 1.0).clamp(-1.0, 1.0)
+
+        # Handle 2D input by adding temporal dimension
+        if pixels.dim() == 4:
+            pixels = pixels.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
+
+        pixels = pixels.to(self.dtype)
+
+        # Encode to latent space
+        posterior = self.encode(pixels, return_dict=False)[0]
+        latents = posterior.mode()  # Use mode instead of sampling for deterministic results
+        # latents = posterior.sample()
+
+        # Apply normalization using mean/std
+        latents_mean = torch.tensor(self.latents_mean).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_std = 1.0 / torch.tensor(self.latents_std).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
+        latents = (latents - latents_mean) * latents_std
+
+        return latents
+
     def blend_v(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int) -> torch.Tensor:
         blend_extent = min(a.shape[-2], b.shape[-2], blend_extent)
         for y in range(blend_extent):

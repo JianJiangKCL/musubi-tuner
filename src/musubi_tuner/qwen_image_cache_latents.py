@@ -38,8 +38,22 @@ def encode_and_save_batch(vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage,
     # item.content: target image (H, W, C)
     contents = preprocess_contents_qwen_image(batch)  # (B, C, H, W)
     contents = contents.unsqueeze(2)  # (B, C, 1, H, W), Qwen-Image VAE needs F axis
+
     with torch.no_grad():
-        latents = vae.encode(contents.to(vae.device, dtype=vae.dtype), return_dict=False)[0].sample()
+        latents = vae.encode_pixels_to_latents(contents.to(vae.device, dtype=vae.dtype))
+
+    # # debugging: decode and visualize the latents
+    # with torch.no_grad():
+    #     pixels = vae.decode_to_pixels(latents)  # 0 to 1
+    #     print(pixels.min(), pixels.max(), pixels.shape)
+    #     pixels = pixels.to(torch.float32).cpu()
+    #     pixels = (pixels * 255).clamp(0, 255).to(torch.uint8)  # convert to uint8
+    #     pixels = pixels[0].permute(1, 2, 0)  # C, H, W -> H, W, C
+    #     pixels = pixels.numpy()
+    #     import cv2
+    #     cv2.imshow("Decoded Pixels", pixels)
+    #     cv2.waitKey(0)
+    #     cv2.destroyAllWindows()
 
     # save cache for each item in the batch
     for b, item in enumerate(batch):
