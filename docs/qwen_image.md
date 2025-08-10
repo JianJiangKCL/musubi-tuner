@@ -107,8 +107,10 @@ accelerate launch --num_cpu_threads_per_process 1 --mixed_precision bf16 src/mus
 - **Requires** specifying `--dit`, `--vae`, and `--text_encoder`.
 - The LoRA network for Qwen-Image (`networks.lora_qwen_image`) is automatically selected.
 - `--mixed_precision bf16` is recommended for Qwen-Image training.
-- Memory saving options like `--fp8_base` and `--fp8_scaled` (for DiT), and `--fp8_vl` (for Text Encoder) are available.
+- Memory saving options like `--fp8_base` and `--fp8_scaled` (for DiT), and `--fp8_vl` (for Text Encoder) are available. 
 - `--gradient_checkpointing` is available for memory savings.
+
+`--fp8_vl` is recommended for GPUs with less than 16GB of VRAM.
 
 `--sdpa` uses PyTorch's scaled dot product attention. Other options like `--xformers`, `--flash_attn`, and `--flash3` are available, but only `--sdpa` and `--xformers` have been tested.
 
@@ -117,6 +119,22 @@ If you specify `--split_attn`, the attention computation will be split, slightly
 The appropriate settings for each parameter are unknown. Feedback is welcome.
 
 `--discrete_flow_shift` is set quite low for Qwen-Image during inference (around 2.2), so a lower value than other models may be preferable.
+
+
+### VRAM Usage Estimates with Memory Saving Options
+
+For 1024x1024 training with the batch size of 1, `--mixed_precision bf16` and `--gradient_checkpointing` is enabled and `--xformers` is used.
+
+|options|VRAM Usage|
+|-------|----------|
+|no   |42GB|
+|`--fp8_base --fp8_scaled`|30GB|
+|+ `--blocks_to_swap 16`|24GB|
+|+ `--blocks_to_swap 45`|12GB|
+
+64GB main RAM system is recommended with `--blocks_to_swap`.
+
+If `--blocks_to_swap` is more than 45, the main RAM usage will increase significantly.
 
 <details>
 <summary>日本語</summary>
@@ -130,6 +148,8 @@ Qwen-Imageの学習は専用のスクリプト`qwen_image_train_network.py`を�
 - `--fp8_base`や`--fp8_scaled`（DiT用）、`--fp8_vl`（テキストエンコーダー用）などのメモリ節約オプションが利用可能です。
 - メモリ節約のために`--gradient_checkpointing`が利用可能です。
 
+GPUのVRAMが16GB未満の場合は、`--fp8_vl`を推奨します。
+
 `--sdpa`はPyTorchのscaled dot product attentionを用います。他に `--xformers`、`--flash_attn`、`--flash3` があります。`--sdpa` と `--xformers` のみ動作確認済みです。
 
 `--split_attn` を指定すると、attentionの計算が分割され、メモリ使用量がわずかに削減されます。`--sdpa` 以外を使用する場合は、`--split_attn` を指定してください。
@@ -137,6 +157,21 @@ Qwen-Imageの学習は専用のスクリプト`qwen_image_train_network.py`を�
 それぞれのパラメータの適切な設定は不明です。フィードバックをお待ちしています。
 
 `--discrete_flow_shift`はQwen-Imageでは推論時にかなり低めなため（2.2程度）、他のモデルよりも低めが良いかもしれません。
+
+### メモリ節約オプションを使用した場合のVRAM使用量の目安
+
+1024x1024の学習でバッチサイズ1の場合、`--mixed_precision bf16`と`--gradient_checkpointing`を指定し、`--xformers`を使用した場合のVRAM使用量の目安は以下の通りです。
+
+|オプション|VRAM使用量|
+|-------|----------|
+|no   |42GB|
+|`--fp8_base --fp8_scaled`|30GB|
+|+ `--blocks_to_swap 16`|24GB|
+|+ `--blocks_to_swap 45`|12GB|
+
+`--blocks_to_swap`を使用する場合は、64GBのメインRAMを推奨します。
+
+`--blocks_to_swap`が45を超えると、メインRAMの使用量が大幅に増加します。
 
 </details>
 
