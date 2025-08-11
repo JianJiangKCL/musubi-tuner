@@ -1384,19 +1384,15 @@ def run_sampling(
     )
 
     for i, t in enumerate(tqdm(timesteps)):
-        if model is None:
-            # lazy loading
-            dit_path = args.dit_high_noise if prev_high_noise else args.dit
-            model = load_dit_model(
-                args, dit_path, args.lora_weight, args.lora_multiplier, gen_settings.cfg, device, gen_settings.dit_weight_dtype
-            )
-
         is_high_noise = (t / 1000.0) >= args.timestep_boundary if args.timestep_boundary is not None else False
 
         if not is_high_noise and prev_high_noise:
             guidance_scale = args.guidance_scale
             logger.info(f"Switching to low noise at step {i}, t={t}, guidance_scale={guidance_scale}")
-            model = models[-1]  # use low noise model for low noise steps
+
+            del model
+            gc.collect()
+
             if len(models) > 1 and (args.offload_inactive_dit or args.lazy_loading):
                 if args.blocks_to_swap > 0:
                     # prepare block swap for low noise model
@@ -1409,13 +1405,23 @@ def run_sampling(
 
                     if args.blocks_to_swap > 0:
                         # prepare block swap for low noise model
-                        model.move_to_device_except_swap_blocks(device)
-                        model.prepare_block_swap_before_forward()
+                        models[-1].move_to_device_except_swap_blocks(device)
+                        models[-1].prepare_block_swap_before_forward()
 
                 else:  # lazy loading
-                    models[0] = None  # does nothing
+                    pass
 
+                gc.collect()
                 clean_memory_on_device(device)
+
+            model = models[-1]  # use low noise model for low noise steps
+
+        if model is None:
+            # lazy loading
+            dit_path = args.dit_high_noise if is_high_noise else args.dit
+            model = load_dit_model(
+                args, dit_path, args.lora_weight, args.lora_multiplier, gen_settings.cfg, device, gen_settings.dit_weight_dtype
+            )
 
         prev_high_noise = is_high_noise
 
@@ -2180,7 +2186,9 @@ def main():
     # Parse arguments
     args = parse_args()
 
-    assert not (args.offload_inactive_git and args.lazy_loading), "--offload_inactive_git and --lazy_loading cannot be used together"
+    assert not (
+        args.offload_inactive_dit and args.lazy_loading
+    ), "--offload_inactive_dit and --lazy_loading cannot be used together"
 
     # Check if latents are provided
     latents_mode = args.latent_path is not None and len(args.latent_path) > 0
