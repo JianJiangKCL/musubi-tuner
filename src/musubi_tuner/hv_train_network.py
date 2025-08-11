@@ -821,8 +821,10 @@ class NetworkTrainer:
             or args.timestep_sampling == "sigmoid"
             or args.timestep_sampling == "shift"
             or args.timestep_sampling == "flux_shift"
+            or args.timestep_sampling == "qwen_shift"
             or args.timestep_sampling == "logsnr"
-            or args.timestep_sampling == "qinglong"
+            or args.timestep_sampling == "qinglong_flux"
+            or args.timestep_sampling == "qinglong_qwen"
         ):
 
             def compute_sampling_timesteps(org_timesteps: torch.Tensor) -> torch.Tensor:
@@ -833,13 +835,16 @@ class NetworkTrainer:
                     else:
                         t = org_timesteps
 
-                elif args.timestep_sampling == "shift" or args.timestep_sampling == "flux_shift":
+                elif args.timestep_sampling.endswith("shift"):
                     if args.timestep_sampling == "shift":
                         shift = args.discrete_flow_shift
-                    else:  # flux_shift
+                    else:
                         h, w = latents.shape[-2:]
                         # we are pre-packed so must adjust for packed size
-                        mu = train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
+                        if args.timestep_sampling == "flux_shift":
+                            mu = train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
+                        elif args.timestep_sampling == "qwen_shift":
+                            mu = train_utils.get_lin_function(x1=256, y1=0.5, x2=8192, y2=0.9)((h // 2) * (w // 2))
                         # def time_shift(mu: float, sigma: float, t: torch.Tensor):
                         #     return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma) # sigma=1.0
                         shift = math.exp(mu)
@@ -855,33 +860,34 @@ class NetworkTrainer:
                     logsnr = uniform_to_logsnr_ppF_pytorch(org_timesteps, args.logit_mean, args.logit_std)
                     t = torch.sigmoid(-logsnr / 2)
 
-                elif args.timestep_sampling == "qinglong":
-                    # Qinglong triple hybrid sampling: flux_shift:logsnr:logsnr2 = .80:.075:.125
+                elif args.timestep_sampling.startswith("qinglong"):
+                    # Qinglong triple hybrid sampling: mid_shift:logsnr:logsnr2 = .80:.075:.125
                     # First decide which method to use for each sample independently
                     decision_t = torch.rand((batch_size,), device=device)
 
-                    # Create masks based on decision_t: .80 for flux_shift, 0.075 for logsnr, and 0.125 for logsnr2
-                    flux_mask = decision_t < 0.80  # 80% for flux_shift
+                    # Create masks based on decision_t: .80 for mid_shift, 0.075 for logsnr, and 0.125 for logsnr2
+                    mid_mask = decision_t < 0.80  # 80% for mid_shift
                     logsnr_mask = (decision_t >= 0.80) & (decision_t < 0.875)  # 7.5% for logsnr
                     logsnr_mask2 = decision_t >= 0.875  # 12.5% for logsnr with -logit_mean
 
                     # Initialize output tensor
                     t = torch.zeros((batch_size,), device=device)
 
-                    # Generate flux_shift samples for selected indices (80%)
-                    if flux_mask.any():
-                        # flux_count = flux_mask.sum().item()
+                    # Generate mid_shift samples for selected indices (80%)
+                    if mid_mask.any():
+                        mid_count = mid_mask.sum().item()
                         h, w = latents.shape[-2:]
-                        mu = train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
+                        if args.timestep_sampling == "qinglong_flux":
+                            mu = train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
+                        elif args.timestep_sampling == "qinglong_qwen":
+                            mu = train_utils.get_lin_function(x1=256, y1=0.5, x2=8192, y2=0.9)((h // 2) * (w // 2))
                         shift = math.exp(mu)
+                        # logits_norm_mid = torch.randn(mid_count, device=device)
+                        logits_norm_mid = uniform_to_normal_ppF(org_timesteps[mid_mask])
+                        t_mid = logits_norm_mid.sigmoid()
+                        t_mid = (t_mid * shift) / (1 + (shift - 1) * t_mid)
 
-                        # logits_norm_flux = torch.randn(flux_count, device=device)
-                        logits_norm_flux = uniform_to_normal_ppF(org_timesteps[flux_mask])
-                        logits_norm_flux = logits_norm_flux * args.sigmoid_scale
-                        t_flux = logits_norm_flux.sigmoid()
-                        t_flux = (t_flux * shift) / (1 + (shift - 1) * t_flux)
-
-                        t[flux_mask] = t_flux
+                        t[mid_mask] = t_mid
 
                     # Generate logsnr samples for selected indices (7.5%)
                     if logsnr_mask.any():
@@ -971,7 +977,7 @@ class NetworkTrainer:
         noise_scheduler = FlowMatchDiscreteScheduler(shift=args.discrete_flow_shift, reverse=True, solver="euler")
         # print(f"Noise scheduler timesteps: {noise_scheduler.timesteps}")
 
-        latents = torch.zeros(BATCH_SIZE, 1, 1, 1, 1, dtype=torch.float16)
+        latents = torch.zeros(BATCH_SIZE, 1, 1, 1024 // 8, 1024 // 8, dtype=torch.float16)
         noise = torch.ones_like(latents)
 
         # sample timesteps
@@ -2542,7 +2548,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "logsnr", "qinglong"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen"],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
