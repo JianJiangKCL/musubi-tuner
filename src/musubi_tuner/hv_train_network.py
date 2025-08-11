@@ -765,9 +765,10 @@ class NetworkTrainer:
             or args.timestep_sampling == "sigmoid"
             or args.timestep_sampling == "shift"
             or args.timestep_sampling == "flux_shift"
-            or args.timestep_sampling == "qwen_image_shift"
+            or args.timestep_sampling == "qwen_shift"
             or args.timestep_sampling == "logsnr"
-            or args.timestep_sampling == "qinglong"
+            or args.timestep_sampling == "qinglong_flux"
+            or args.timestep_sampling == "qinglong_qwen"
         ):
 
             def get_timesteps():
