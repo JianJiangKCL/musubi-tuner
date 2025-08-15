@@ -52,6 +52,9 @@ Wan2.1/2.2については、[Wan2.1/2.2のドキュメント](./docs/wan.md)も�
 
 - GitHub Discussionsを有効にしました。コミュニティのQ&A、知識共有、技術情報の交換などにご利用ください。バグ報告や機能リクエストにはIssuesを、質問や経験の共有にはDiscussionsをご利用ください。[Discussionはこちら](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- 2025/08/15
+    - Timestep Bucketing機能が追加されました。これにより、タイムステップの分布がより均一になり、学習が安定します。PR [#418](https://github.com/kohya-ss/musubi-tuner/pull/418) 詳細は[Timestep Bucketingのドキュメント](./docs/advanced_config.md#timestep-bucketing-for-uniform-sampling--均一なサンプリングのためのtimestep-bucketing)を参照してください。
+
 - 2025/08/14
     - `convert_lora.py`がQwen-ImageのLoRAをサポートしました。PR [#444](https://github.com/kohya-ss/musubi-tuner/pull/444) Diffusers形式との相互変換が可能です。詳細は[LoRAの形式の変換](#loraの形式の変換)を参照してください。
 
