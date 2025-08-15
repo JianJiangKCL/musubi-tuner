@@ -536,7 +536,7 @@ class WanNetworkTrainer(NetworkTrainer):
         bsize = latents.shape[0]
         for i in range(bsize):
             for _ in range(num_max_calls):
-                ts_i = [self.get_bucketed_timestep()]
+                ts_i = [self.get_bucketed_timestep()] if self.num_timestep_buckets is not None else None
 
                 noisy_model_input, ts_i = super().get_noisy_model_input_and_timesteps(
                     args, noise[i : i + 1], latents[i : i + 1], ts_i, noise_scheduler, device, dtype

@@ -777,8 +777,7 @@ class NetworkTrainer:
     ):
         batch_size = noise.shape[0]
 
-        if timesteps is None:
-            timesteps = [random.uniform(0, 1) for _ in range(batch_size)]
+        if timesteps is not None:
             timesteps = torch.tensor(timesteps, device=device)
 
         # This function converts uniform distribution samples to logistic distribution samples.
@@ -895,7 +894,8 @@ class NetworkTrainer:
                         elif args.timestep_sampling == "qinglong_qwen":
                             mu = train_utils.get_lin_function(x1=256, y1=0.5, x2=8192, y2=0.9)((h // 2) * (w // 2))
                         shift = math.exp(mu)
-                        logits_norm_mid = randn(batch_size, org_timesteps[mid_mask] if org_timesteps is not None else None)
+                        logits_norm_mid = randn(mid_count, org_timesteps[mid_mask] if org_timesteps is not None else None)
+                        logits_norm_mid = logits_norm_mid * args.sigmoid_scale
                         t_mid = logits_norm_mid.sigmoid()
                         t_mid = (t_mid * shift) / (1 + (shift - 1) * t_mid)
 
