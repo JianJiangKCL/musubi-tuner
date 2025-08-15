@@ -938,9 +938,10 @@ class NetworkTrainer:
                 max_loops = 1000
                 available_t = []
                 for i in range(max_loops):
-                    t = compute_sampling_timesteps(
-                        torch.tensor([self.get_bucketed_timestep() for _ in range(batch_size)], device=device)
-                    )
+                    t = None
+                    if self.num_timestep_buckets is not None:
+                        t = torch.tensor([self.get_bucketed_timestep() for _ in range(batch_size)], device=device)
+                    t = compute_sampling_timesteps(t)
                     for t_i in t:
                         if t_min <= t_i <= t_max:
                             available_t.append(t_i)
