@@ -779,10 +779,7 @@ class NetworkTrainer:
 
         if timesteps is None:
             timesteps = [random.uniform(0, 1) for _ in range(batch_size)]
-        # else:
-        #     print(f"using provided timesteps: {timesteps}")
-
-        timesteps = torch.tensor(timesteps, device=device)
+            timesteps = torch.tensor(timesteps, device=device)
 
         # This function converts uniform distribution samples to logistic distribution samples.
         # The final distribution of the samples after shifting significantly differs from the original normal distribution.
@@ -827,13 +824,30 @@ class NetworkTrainer:
             or args.timestep_sampling == "qinglong_qwen"
         ):
 
-            def compute_sampling_timesteps(org_timesteps: torch.Tensor) -> torch.Tensor:
+            def compute_sampling_timesteps(org_timesteps: Optional[torch.Tensor]) -> torch.Tensor:
+                def rand(bs: int, org_ts: Optional[torch.Tensor] = None) -> torch.Tensor:
+                    nonlocal device
+                    return torch.rand((bs,), device=device) if org_ts is None else org_ts
+
+                def randn(bs: int, org_ts: Optional[torch.Tensor] = None) -> torch.Tensor:
+                    nonlocal device
+                    return uniform_to_normal_ppF(org_ts) if org_ts is not None else torch.randn((bs,), device=device)
+
+                def rand_logsnr(bs: int, mean: float, std: float, org_ts: Optional[torch.Tensor] = None) -> torch.Tensor:
+                    nonlocal device
+                    logsnr = (
+                        uniform_to_logsnr_ppF_pytorch(org_ts, mean, std)
+                        if org_ts is not None
+                        else torch.normal(mean=mean, std=std, size=(bs,), device=device)
+                    )
+                    return logsnr
+
                 if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
                     # Simple random t-based noise sampling
                     if args.timestep_sampling == "sigmoid":
-                        t = torch.sigmoid(args.sigmoid_scale * uniform_to_normal_ppF(org_timesteps))
+                        t = torch.sigmoid(args.sigmoid_scale * randn(batch_size, org_timesteps))
                     else:
-                        t = org_timesteps
+                        t = rand(batch_size, org_timesteps)
 
                 elif args.timestep_sampling.endswith("shift"):
                     if args.timestep_sampling == "shift":
@@ -849,15 +863,14 @@ class NetworkTrainer:
                         #     return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma) # sigma=1.0
                         shift = math.exp(mu)
 
-                    logits_norm = uniform_to_normal_ppF(org_timesteps)
+                    logits_norm = randn(batch_size, org_timesteps)
                     logits_norm = logits_norm * args.sigmoid_scale  # larger scale for more uniform sampling
                     t = logits_norm.sigmoid()
                     t = (t * shift) / (1 + (shift - 1) * t)
 
                 elif args.timestep_sampling == "logsnr":
                     # https://arxiv.org/abs/2411.14793v3
-                    # logsnr = torch.normal(mean=args.logit_mean, std=args.logit_std, size=(batch_size,), device=device)
-                    logsnr = uniform_to_logsnr_ppF_pytorch(org_timesteps, args.logit_mean, args.logit_std)
+                    logsnr = rand_logsnr(batch_size, args.logit_mean, args.logit_std, org_timesteps)
                     t = torch.sigmoid(-logsnr / 2)
 
                 elif args.timestep_sampling.startswith("qinglong"):
@@ -882,8 +895,7 @@ class NetworkTrainer:
                         elif args.timestep_sampling == "qinglong_qwen":
                             mu = train_utils.get_lin_function(x1=256, y1=0.5, x2=8192, y2=0.9)((h // 2) * (w // 2))
                         shift = math.exp(mu)
-                        # logits_norm_mid = torch.randn(mid_count, device=device)
-                        logits_norm_mid = uniform_to_normal_ppF(org_timesteps[mid_mask])
+                        logits_norm_mid = randn(batch_size, org_timesteps[mid_mask] if org_timesteps is not None else None)
                         t_mid = logits_norm_mid.sigmoid()
                         t_mid = (t_mid * shift) / (1 + (shift - 1) * t_mid)
 
@@ -891,18 +903,23 @@ class NetworkTrainer:
 
                     # Generate logsnr samples for selected indices (7.5%)
                     if logsnr_mask.any():
-                        # logsnr_count = logsnr_mask.sum().item()
-                        # logsnr = torch.normal(mean=args.logit_mean, std=args.logit_std, size=(logsnr_count,), device=device)
-                        logsnr = uniform_to_logsnr_ppF_pytorch(org_timesteps[logsnr_mask], args.logit_mean, args.logit_std)
+                        logsnr_count = logsnr_mask.sum().item()
+                        logsnr = rand_logsnr(
+                            logsnr_count,
+                            args.logit_mean,
+                            args.logit_std,
+                            org_timesteps[logsnr_mask] if org_timesteps is not None else None,
+                        )
                         t_logsnr = torch.sigmoid(-logsnr / 2)
 
                         t[logsnr_mask] = t_logsnr
 
                     # Generate logsnr2 samples with -logit_mean for selected indices (12.5%)
                     if logsnr_mask2.any():
-                        # logsnr2_count = logsnr_mask2.sum().item()
-                        # logsnr2 = torch.normal(mean=5.36, std=1.0, size=(logsnr2_count,), device=device)
-                        logsnr2 = uniform_to_logsnr_ppF_pytorch(org_timesteps[logsnr_mask2], 5.36, 1.0)
+                        logsnr2_count = logsnr_mask2.sum().item()
+                        logsnr2 = rand_logsnr(
+                            logsnr2_count, 5.36, 1.0, org_timesteps[logsnr_mask2] if org_timesteps is not None else None
+                        )
                         t_logsnr2 = torch.sigmoid(-logsnr2 / 2)
 
                         t[logsnr_mask2] = t_logsnr2
@@ -983,9 +1000,15 @@ class NetworkTrainer:
         # sample timesteps
         sampled_timesteps = [0] * noise_scheduler.config.num_train_timesteps
         for i in tqdm(range(N_TRY // BATCH_SIZE)):
+            bucketed_timesteps = None
+            if args.num_timestep_buckets is not None and args.num_timestep_buckets > 1:
+                self.num_timestep_buckets = args.num_timestep_buckets
+                bucketed_timesteps = [self.get_bucketed_timestep() for _ in range(BATCH_SIZE)]
+                bucketed_timesteps = torch.tensor(bucketed_timesteps, device="cpu")
+
             # we use noise=1, so retured noisy_model_input is same as timestep, because `noisy_model_input = (1 - t) * latents + t * noise`
             actual_timesteps, _ = self.get_noisy_model_input_and_timesteps(
-                args, noise, latents, None, noise_scheduler, "cpu", torch.float16
+                args, noise, latents, bucketed_timesteps, noise_scheduler, "cpu", torch.float16
             )
             actual_timesteps = actual_timesteps[:, 0, 0, 0, 0] * 1000
             for t in actual_timesteps:
