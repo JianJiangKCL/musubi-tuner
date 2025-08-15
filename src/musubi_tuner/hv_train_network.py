@@ -1005,7 +1005,6 @@ class NetworkTrainer:
             if args.num_timestep_buckets is not None and args.num_timestep_buckets > 1:
                 self.num_timestep_buckets = args.num_timestep_buckets
                 bucketed_timesteps = [self.get_bucketed_timestep() for _ in range(BATCH_SIZE)]
-                bucketed_timesteps = torch.tensor(bucketed_timesteps, device="cpu")
 
             # we use noise=1, so retured noisy_model_input is same as timestep, because `noisy_model_input = (1 - t) * latents + t * noise`
             actual_timesteps, _ = self.get_noisy_model_input_and_timesteps(
