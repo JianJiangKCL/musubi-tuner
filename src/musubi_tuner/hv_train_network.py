@@ -376,7 +376,7 @@ class NetworkTrainer:
     def __init__(self):
         self.blocks_to_swap = None
         self.timestep_range_pool = []
-        self.num_timestep_buckets: int = 0  # for get_bucketed_timestep()
+        self.num_timestep_buckets: Optional[int] = None  # for get_bucketed_timestep()
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -752,7 +752,7 @@ class NetworkTrainer:
         return True
 
     def get_bucketed_timestep(self) -> float:
-        if self.num_timestep_buckets <= 1:
+        if self.num_timestep_buckets is None or self.num_timestep_buckets <= 1:
             return random.random()
 
         if len(self.timestep_range_pool) == 0:
@@ -1617,14 +1617,14 @@ class NetworkTrainer:
         # Load dataset config
         if args.num_timestep_buckets is not None:
             logger.info(f"Using timestep bucketing. Number of buckets: {args.num_timestep_buckets}")
-        self.num_timestep_buckets = args.num_timestep_buckets if args.num_timestep_buckets is not None else 0
+        self.num_timestep_buckets = args.num_timestep_buckets  # None or int, None makes all the behavior same as before
 
         blueprint_generator = BlueprintGenerator(ConfigSanitizer())
         logger.info(f"Load dataset config from {args.dataset_config}")
         user_config = config_utils.load_user_config(args.dataset_config)
         blueprint = blueprint_generator.generate(user_config, args, architecture=self.architecture)
         train_dataset_group = config_utils.generate_dataset_group_by_blueprint(
-            blueprint.dataset_group, training=True, num_timestep_buckets=args.num_timestep_buckets
+            blueprint.dataset_group, training=True, num_timestep_buckets=self.num_timestep_buckets
         )
 
         if train_dataset_group.num_train_items == 0:
