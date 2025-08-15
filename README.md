@@ -61,6 +61,9 @@ If you find this project helpful, please consider supporting its development via
 
 - GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- August 15, 2025:
+    - The Timestep Bucketing feature has been added, which allows for a more uniform distribution of timesteps and stabilizes training. See PR [#418](https://github.com/kohya-ss/musubi-tuner/pull/418) and the [Timestep Bucketing documentation](./docs/advanced_config.md#timestep-bucketing-for-uniform-sampling--均一なサンプリングのためのtimestep-bucketing) for details.
+
 - August 14, 2025:
     - `convert_lora.py` now supports conversion for Qwen-Image LoRA models with Diffusers format. PR [#444](https://github.com/kohya-ss/musubi-tuner/pull/444) See [here](#convert-lora-to-another-format) for more details.
 
