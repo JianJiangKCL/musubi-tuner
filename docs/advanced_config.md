@@ -954,14 +954,14 @@ accelerate launch ... \
 
 ### Notes / 注意点
 
-- This feature may not work as expected when training with both high and low noise models simultaneously in `wan_train_network.py` (`--dit_high_noise` option), as the timestep distribution is handled differently.
+- This feature may not work as expected when training with both high and low noise models simultaneously in `wan_train_network.py` (`--dit_high_noise` option) or when `--preserve_distribution_shape` is specified. Because the way timesteps are handled will differ in these cases.
 
     Specifically, instead of selecting from pre-configured timestep buckets, the process involves determining buckets on-demand and generating random timesteps within the range each bucket covers. Therefore, the uniform sampling effect may not be achieved, but some improvement can be expected compared to completely random generation (within the `[0, 1]` range).
 
 <details>
 <summary>日本語</summary>
 
-- `wan_train_network.py` でhigh/lowノイズモデルを同時に学習する場合（`--dit_high_noise` オプション）、タイムステップの扱いが異なるため、この機能は期待通りに動作しない可能性があります。
+- `wan_train_network.py` でhigh/lowノイズモデルを同時に学習する場合（`--dit_high_noise` オプション）、および、`--preserve_distribution_shape` を指定した場合、タイムステップの扱いが異なるため、この機能は期待通りに動作しない可能性があります。
 
     具体的には、あらかじめ設定されたタイムステップのバケットから選択されるのではなく、都度、バケツの決定→範囲内でのランダムなタイムステップの生成が行われます。このため、均一なサンプリングの効果が得られない可能性がありますが、完全なランダム（`[0, 1]` の範囲での生成）に比べると、多少の改善が見込まれます。
 
