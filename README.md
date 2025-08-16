@@ -61,6 +61,9 @@ If you find this project helpful, please consider supporting its development via
 
 - GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- August 16, 2025:
+    - Added a tool for captioning images using Qwen-Image VLM. PR [#460](https://github.com/kohya-ss/musubi-tuner/pull/460) See [here](./docs/tools.md#image-captioning-with-qwen25-vl-srcmusubi_tunercaption_images_by_qwen_vlpy) for more details.
+
 - August 15, 2025:
     - The Timestep Bucketing feature has been added, which allows for a more uniform distribution of timesteps and stabilizes training. See PR [#418](https://github.com/kohya-ss/musubi-tuner/pull/418) and the [Timestep Bucketing documentation](./docs/advanced_config.md#timestep-bucketing-for-uniform-sampling--均一なサンプリングのためのtimestep-bucketing) for details.
 
@@ -93,15 +96,6 @@ If you find this project helpful, please consider supporting its development via
 
 - August 1, 2025:
     - Fixed the issue where block swapping did not work in FLUX. Kontext LoRA training. Thanks to sdbds for [PR #402](https://github.com/kohya-ss/musubi-tuner/pull/402). [PR #403](https://github.com/kohya-ss/musubi-tuner/pull/403).
-
-- July 31, 2025:
-    - Added [a section for developers using AI coding agents](#for-developers-using-ai-coding-agents). If you are using AI agents, please read this section.
-
-- July 29, 2025:
-    - Added `sentencepiece` to `pyproject.toml` to fix the issue where FLUX.1 Kontext LoRA training was not possible due to missing dependencies.
-
-- July 28, 2025:
-    - Added LoRA training for FLUX.1 Kontext \[dev\]. For details, see the [FLUX.1 Kontext LoRA training documentation](./docs/flux_kontext.md).
 
 ### Releases
 
