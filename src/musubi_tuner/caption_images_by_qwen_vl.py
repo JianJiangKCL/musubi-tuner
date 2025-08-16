@@ -65,8 +65,10 @@ def load_model_and_processor(model_path: str, device: torch.device, max_size: in
     """Load Qwen2.5-VL model and processor"""
     logger.info(f"Loading model from: {model_path}")
 
-    min_pixels = 256 * 28 * 28  # this means 256x256 is the minimum input size
-    max_pixels = max_size * 28 * 28
+    min_pixels = 256 * IMAGE_FACTOR * IMAGE_FACTOR  # this means 256x256 is the minimum input size
+    max_pixels = max_size * IMAGE_FACTOR * IMAGE_FACTOR
+
+    # We don't have configs in model_path, so we use defaults from Hugging Face
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", min_pixels=min_pixels, max_pixels=max_pixels)
 
     # Use load_qwen2_5_vl function from qwen_image_utils

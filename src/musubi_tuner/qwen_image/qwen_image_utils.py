@@ -222,7 +222,7 @@ def load_qwen2_5_vl(
 
     if dtype is not None:
         if is_fp8(dtype):
-            org_dtype = torch.bfloat16  #  qwen2_5_vl.dtype
+            org_dtype = torch.bfloat16  # model weight is fp8 in loading, but original dtype is bfloat16
             logger.info(f"prepare Qwen2.5-VL for fp8: set to {dtype} from {org_dtype}")
             qwen2_5_vl.to(dtype)
 
