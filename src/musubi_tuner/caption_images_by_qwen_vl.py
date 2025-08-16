@@ -14,6 +14,12 @@ from transformers import AutoProcessor
 from musubi_tuner.dataset import image_video_dataset
 from musubi_tuner.qwen_image.qwen_image_utils import load_qwen2_5_vl
 
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+
 IMAGE_FACTOR = 28  # The image size must be divisible by this factor
 DEFAULT_MAX_SIZE = 1280
 
@@ -57,24 +63,20 @@ def parse_args():
 
 def load_model_and_processor(model_path: str, device: torch.device, max_size: int = DEFAULT_MAX_SIZE, fp8_vl: bool = False):
     """Load Qwen2.5-VL model and processor"""
-    print(f"Loading model from: {model_path}")
+    logger.info(f"Loading model from: {model_path}")
 
-    try:
-        min_pixels = 256 * 28 * 28  # this means 256x256 is the minimum input size
-        max_pixels = max_size * 28 * 28
-        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", min_pixels=min_pixels, max_pixels=max_pixels)
+    min_pixels = 256 * 28 * 28  # this means 256x256 is the minimum input size
+    max_pixels = max_size * 28 * 28
+    processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", min_pixels=min_pixels, max_pixels=max_pixels)
 
-        # Use load_qwen2_5_vl function from qwen_image_utils
-        dtype = torch.float8_e4m3fn if fp8_vl else torch.bfloat16
-        _, model = load_qwen2_5_vl(model_path, dtype=dtype, device=device, disable_mmap=False)
+    # Use load_qwen2_5_vl function from qwen_image_utils
+    dtype = torch.float8_e4m3fn if fp8_vl else torch.bfloat16
+    _, model = load_qwen2_5_vl(model_path, dtype=dtype, device=device, disable_mmap=False)
 
-        model.eval()
+    model.eval()
 
-        print(f"Model loaded successfully on device: {model.device}")
-        return processor, model
-
-    except Exception as e:
-        raise RuntimeError(f"Failed to load model: {e}")
+    logger.info(f"Model loaded successfully on device: {model.device}")
+    return processor, model
 
 
 def resize_image(image: Image.Image, max_size: int = DEFAULT_MAX_SIZE) -> Image.Image:
@@ -191,14 +193,14 @@ def process_images(args):
 
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    print(f"Output format: {args.output_format}")
+    logger.info(f"Using device: {device}")
+    logger.info(f"Output format: {args.output_format}")
     if args.fp8_vl:
-        print("Using fp8 precision for model")
+        logger.info("Using fp8 precision for model")
 
     # Get image files
     image_files = image_video_dataset.glob_images(args.image_path)
-    print(f"Found {len(image_files)} image files")
+    logger.info(f"Found {len(image_files)} image files")
 
     # Load model and processor
     processor, model = load_model_and_processor(args.model_path, device, args.max_size, args.fp8_vl)
@@ -224,7 +226,7 @@ def process_images(args):
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 f.flush()  # Ensure data is written immediately
 
-        print(f"Caption generation completed. Results saved to: {args.output_file}")
+        logger.info(f"Caption generation completed. Results saved to: {args.output_file}")
 
     else:
         # Text file output format
@@ -241,7 +243,7 @@ def process_images(args):
             with open(text_file_path, "w", encoding="utf-8") as f:
                 f.write(caption)
 
-        print(f"Caption generation completed. Text files saved alongside each image.")
+        logger.info(f"Caption generation completed. Text files saved alongside each image.")
 
 
 def main():
