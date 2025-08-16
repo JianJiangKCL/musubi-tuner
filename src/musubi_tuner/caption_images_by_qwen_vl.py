@@ -15,6 +15,7 @@ from musubi_tuner.dataset import image_video_dataset
 from musubi_tuner.qwen_image.qwen_image_utils import load_qwen2_5_vl
 
 IMAGE_FACTOR = 28  # The image size must be divisible by this factor
+DEFAULT_MAX_SIZE = 1280
 
 DEFAULT_PROMPT = """# Image Annotator
 You are a professional image annotator. Please complete the following task based on the input image.
@@ -33,30 +34,39 @@ def parse_args():
     parser.add_argument("--model_path", type=str, required=True, help="Path to Qwen2.5-VL model")
     parser.add_argument("--output_file", type=str, required=False, help="Output JSONL file path (required for 'jsonl' format)")
     parser.add_argument("--max_new_tokens", type=int, default=1024, help="Maximum number of new tokens to generate (default: 1024)")
-    parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT, help="Custom prompt for caption generation (supports \\n for newlines)")
-    parser.add_argument("--fp8_vl", action='store_true', help="Load Qwen2.5-VL model in fp8 precision")
-    parser.add_argument("--output_format", type=str, choices=['jsonl', 'text'], default='jsonl', help="Output format: 'jsonl' for JSONL file or 'text' for individual text files (default: jsonl)")
+    parser.add_argument(
+        "--prompt", type=str, default=DEFAULT_PROMPT, help="Custom prompt for caption generation (supports \\n for newlines)"
+    )
+    parser.add_argument(
+        "--max_size",
+        type=int,
+        default=DEFAULT_MAX_SIZE,
+        help=f"Maximum image size (default: {DEFAULT_MAX_SIZE}). The images are resized to fit the total pixel area within (max_size x max_size)",
+    )
+    parser.add_argument("--fp8_vl", action="store_true", help="Load Qwen2.5-VL model in fp8 precision")
+    parser.add_argument(
+        "--output_format",
+        type=str,
+        choices=["jsonl", "text"],
+        default="jsonl",
+        help="Output format: 'jsonl' for JSONL file or 'text' for individual text files (default: jsonl)",
+    )
 
     return parser.parse_args()
 
 
-def load_model_and_processor(model_path: str, device: torch.device, fp8_vl: bool = False):
+def load_model_and_processor(model_path: str, device: torch.device, max_size: int = DEFAULT_MAX_SIZE, fp8_vl: bool = False):
     """Load Qwen2.5-VL model and processor"""
     print(f"Loading model from: {model_path}")
 
     try:
         min_pixels = 256 * 28 * 28  # this means 256x256 is the minimum input size
-        max_pixels = 1280 * 28 * 28
+        max_pixels = max_size * 28 * 28
         processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", min_pixels=min_pixels, max_pixels=max_pixels)
-        
+
         # Use load_qwen2_5_vl function from qwen_image_utils
         dtype = torch.float8_e4m3fn if fp8_vl else torch.bfloat16
-        tokenizer, model = load_qwen2_5_vl(
-            model_path,
-            dtype=dtype,
-            device=device,
-            disable_mmap=False
-        )
+        _, model = load_qwen2_5_vl(model_path, dtype=dtype, device=device, disable_mmap=False)
 
         model.eval()
 
@@ -67,10 +77,10 @@ def load_model_and_processor(model_path: str, device: torch.device, fp8_vl: bool
         raise RuntimeError(f"Failed to load model: {e}")
 
 
-def resize_image(image: Image.Image) -> Image.Image:
+def resize_image(image: Image.Image, max_size: int = DEFAULT_MAX_SIZE) -> Image.Image:
     """Resize image to a suitable resolution"""
     min_area = 256 * 256
-    max_area = 1280 * 1280
+    max_area = max_size * max_size
     width, height = image.size
     width_rounded = int((width / IMAGE_FACTOR) + 0.5) * IMAGE_FACTOR
     height_rounded = int((height / IMAGE_FACTOR) + 0.5) * IMAGE_FACTOR
@@ -120,7 +130,16 @@ def resize_image(image: Image.Image) -> Image.Image:
     return image
 
 
-def generate_caption(processor, model, image_path: str, device: torch.device, max_new_tokens: int, prompt: str = DEFAULT_PROMPT, fp8_vl: bool = False) -> str:
+def generate_caption(
+    processor,
+    model,
+    image_path: str,
+    device: torch.device,
+    max_new_tokens: int,
+    prompt: str = DEFAULT_PROMPT,
+    max_size: int = DEFAULT_MAX_SIZE,
+    fp8_vl: bool = False,
+) -> str:
     """Generate caption for a single image"""
     # Load and process image
     image = Image.open(image_path).convert("RGB")
@@ -131,40 +150,25 @@ def generate_caption(processor, model, image_path: str, device: torch.device, ma
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
-                {
-                    "type": "text",
-                    "text": prompt,
-                },
+                {"type": "text", "text": prompt},
             ],
         }
     ]
 
     # Preparation for inference
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    image_inputs = resize_image(image)
+    image_inputs = resize_image(image, max_size=max_size)
     inputs = processor(text=[text], images=image_inputs, padding=True, return_tensors="pt")
-    inputs = inputs.to("cuda")
+    inputs = inputs.to(device)
 
     # Generate caption with fp8 support
     if fp8_vl:
         with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=0.0,
-                pad_token_id=processor.tokenizer.eos_token_id,
-            )
+            generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, pad_token_id=processor.tokenizer.eos_token_id)
     else:
         with torch.no_grad():
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=0.0,
-                pad_token_id=processor.tokenizer.eos_token_id,
-            )
-    
+            generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, pad_token_id=processor.tokenizer.eos_token_id)
+
     generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
     caption = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
 
@@ -175,13 +179,16 @@ def generate_caption(processor, model, image_path: str, device: torch.device, ma
 def process_images(args):
     """Main processing function"""
     # Validate arguments
-    if args.output_format == 'jsonl' and not args.output_file:
+    if args.output_format == "jsonl" and not args.output_file:
         raise ValueError("--output_file is required when --output_format is 'jsonl'")
-    
+
     # Process custom prompt - replace \n with actual newlines
     if args.prompt:
-        args.prompt = args.prompt.replace('\\n', '\n')
-    
+        args.prompt = args.prompt.replace("\\n", "\n")
+        prompt = args.prompt
+    else:
+        prompt = DEFAULT_PROMPT
+
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -194,19 +201,21 @@ def process_images(args):
     print(f"Found {len(image_files)} image files")
 
     # Load model and processor
-    processor, model = load_model_and_processor(args.model_path, device, args.fp8_vl)
+    processor, model = load_model_and_processor(args.model_path, device, args.max_size, args.fp8_vl)
 
     # Create output directory if needed for JSONL format
-    if args.output_format == 'jsonl':
+    if args.output_format == "jsonl":
         output_path = Path(args.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Process images and write results
-    if args.output_format == 'jsonl':
+    if args.output_format == "jsonl":
         # JSONL output format
         with open(args.output_file, "w", encoding="utf-8") as f:
             for image_path in tqdm(image_files, desc="Generating captions"):
-                caption = generate_caption(processor, model, image_path, device, args.max_new_tokens, args.prompt, args.fp8_vl)
+                caption = generate_caption(
+                    processor, model, image_path, device, args.max_new_tokens, prompt, args.max_size, args.fp8_vl
+                )
 
                 # Create JSONL entry
                 entry = {"image_path": image_path, "caption": caption}
@@ -216,16 +225,18 @@ def process_images(args):
                 f.flush()  # Ensure data is written immediately
 
         print(f"Caption generation completed. Results saved to: {args.output_file}")
-    
+
     else:
         # Text file output format
         for image_path in tqdm(image_files, desc="Generating captions"):
-            caption = generate_caption(processor, model, image_path, device, args.max_new_tokens, args.prompt, args.fp8_vl)
+            caption = generate_caption(
+                processor, model, image_path, device, args.max_new_tokens, prompt, args.max_size, args.fp8_vl
+            )
 
             # Generate text file path: same directory as image, with .txt extension
             image_path_obj = Path(image_path)
-            text_file_path = image_path_obj.with_suffix('.txt')
-            
+            text_file_path = image_path_obj.with_suffix(".txt")
+
             # Write caption to text file
             with open(text_file_path, "w", encoding="utf-8") as f:
                 f.write(caption)
