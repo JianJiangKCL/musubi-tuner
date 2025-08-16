@@ -249,11 +249,8 @@ def process_images(args):
 def main():
     """Main function"""
     args = parse_args()
-
     process_images(args)
-
-    return 0
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()
