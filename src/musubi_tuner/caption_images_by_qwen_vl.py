@@ -36,7 +36,7 @@ def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Generate captions for images using Qwen2.5-VL")
 
-    parser.add_argument("--image_path", type=str, required=True, help="Path to directory containing images")
+    parser.add_argument("--image_dir", type=str, required=True, help="Path to directory containing images")
     parser.add_argument("--model_path", type=str, required=True, help="Path to Qwen2.5-VL model")
     parser.add_argument("--output_file", type=str, required=False, help="Output JSONL file path (required for 'jsonl' format)")
     parser.add_argument("--max_new_tokens", type=int, default=1024, help="Maximum number of new tokens to generate (default: 1024)")
@@ -199,7 +199,7 @@ def process_images(args):
         logger.info("Using fp8 precision for model")
 
     # Get image files
-    image_files = image_video_dataset.glob_images(args.image_path)
+    image_files = image_video_dataset.glob_images(args.image_dir)
     logger.info(f"Found {len(image_files)} image files")
 
     # Load model and processor
