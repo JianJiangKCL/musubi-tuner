@@ -101,7 +101,7 @@ class QwenImageNetworkTrainer(NetworkTrainer):
                         embed, mask = qwen_image_utils.get_qwen_prompt_embeds_with_image(
                             vl_processor, text_encoder, p, control_image_np
                         )
-                    txt_len = mask.sum().item()  # length of the text in the batch
+                    txt_len = mask.to(dtype=torch.bool).sum().item()  # length of the text in the batch
                     embed = embed[:, :txt_len]
                     sample_prompts_te_outputs[embed_key] = embed
 

@@ -603,11 +603,11 @@ def generate(
     negative_mask = context_null["mask"].to(device, dtype=torch.bfloat16)
 
     # The batch size is 1, so we can trim embeds as the length of the prompt
-    txt_seq_lens = mask.sum(dim=1).to(torch.int64).tolist()
+    txt_seq_lens = mask.to(dtype=torch.bool).sum(dim=1).to(torch.int64).tolist()
     embed = embed[:, : txt_seq_lens[0], :]
     mask = None
 
-    negative_txt_seq_lens = negative_mask.sum(dim=1).to(torch.int64).tolist()
+    negative_txt_seq_lens = negative_mask.to(dtype=torch.bool).sum(dim=1).to(torch.int64).tolist()
     negative_embed = negative_embed[:, : negative_txt_seq_lens[0], :]
     negative_mask = None
 

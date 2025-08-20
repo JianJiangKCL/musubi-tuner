@@ -64,7 +64,7 @@ def encode_and_save_batch(
 
     # save prompt cache
     for item, (embed, mask) in zip(batch, zip(embed, mask)):
-        txt_len = mask.sum().item()  # length of the text in the batch
+        txt_len = mask.to(dtype=torch.bool).sum().item()  # length of the text in the batch
         embed = embed[:txt_len]
         save_text_encoder_output_cache_qwen_image(item, embed)
 
