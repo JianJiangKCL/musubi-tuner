@@ -108,10 +108,10 @@ accelerate launch --num_cpu_threads_per_process 1 --mixed_precision bf16 src/mus
     --sdpa --mixed_precision bf16 \
     --timestep_sampling shift \
     --weighting_scheme none --discrete_flow_shift 2.2 \
-    --optimizer_type adamw8bit --learning_rate 1e-4 --gradient_checkpointing \
+    --optimizer_type adamw8bit --learning_rate 5e-5 --gradient_checkpointing \
     --max_data_loader_n_workers 2 --persistent_data_loader_workers \
     --network_module networks.lora_qwen_image \
-    --network_dim 32 \
+    --network_dim 16 \
     --max_train_epochs 16 --save_every_n_epochs 1 --seed 42 \
     --output_dir path/to/output_dir --output_name name-of-lora
 ```
