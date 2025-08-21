@@ -937,7 +937,15 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         # prepare_text_inputs will move text_encoders to device temporarily
         text_data = prepare_text_inputs(prompt_args_item, all_precomputed_image_data[i][1], device, temp_shared_models_txt)
 
-        text_data["control"] = all_precomputed_image_data[i]
+        if args.edit:
+            control_image_data = all_precomputed_image_data[i]
+            control_image_feature = control_image_data[1]
+        else:
+            control_image_data = None
+            control_image_feature = None
+        text_data = prepare_text_inputs(prompt_args_item, control_image_feature, device, temp_shared_models_txt)
+
+        text_data["control"] = control_image_data
         all_precomputed_text_data.append(text_data)
 
     # Models should be removed from device after prepare_text_inputs
