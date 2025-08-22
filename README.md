@@ -59,7 +59,7 @@ For Wan2.1/2.2, please also refer to [Wan2.1/2.2 documentation](./docs/wan.md). 
 We are grateful to the following companies for their generous sponsorship:
 
 <a href="https://aihub.co.jp/top-en">
-  <img src="./images/logo_aihub.png" alt="AiHUB Inc." height="100px">
+  <img src="./images/logo_aihub.png" alt="AiHUB Inc." title="AiHUB Inc." height="100px">
 </a>
 
 ### Support the Project

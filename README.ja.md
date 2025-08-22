@@ -49,7 +49,7 @@ Wan2.1/2.2については、[Wan2.1/2.2のドキュメント](./docs/wan.md)も�
 このプロジェクトを支援してくださる企業・団体の皆様に深く感謝いたします。
 
 <a href="https://aihub.co.jp/">
-  <img src="./images/logo_aihub.png" alt="AiHUB株式会社" height="100px">
+  <img src="./images/logo_aihub.png" alt="AiHUB株式会社" title="AiHUB株式会社" height="100px">
 </a>
 
 ### スポンサー募集のお知らせ
