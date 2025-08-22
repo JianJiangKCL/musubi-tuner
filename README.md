@@ -10,6 +10,7 @@
 - [Musubi Tuner](#musubi-tuner)
   - [Table of Contents](#table-of-contents)
   - [Introduction](#introduction)
+    - [Sponsors](#sponsors)
     - [Support the Project](#support-the-project)
     - [Recent Updates](#recent-updates)
     - [Releases](#releases)
