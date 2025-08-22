@@ -43,6 +43,14 @@ Wan2.1/2.2については、[Wan2.1/2.2のドキュメント](./docs/wan.md)も�
 
 *リポジトリは開発中です。*
 
+### スポンサー
+
+このプロジェクトを支援してくださる企業・団体の皆様に感謝いたします：
+
+<a href="https://aihub.co.jp/">
+  <img src="./images/logo_aihub.png" alt="AiHUB株式会社" height="100px">
+</a>
+
 ### スポンサー募集のお知らせ
 
 このプロジェクトがお役に立ったなら、ご支援いただけると嬉しく思います。 [GitHub Sponsors](https://github.com/sponsors/kohya-ss/)で受け付けています。

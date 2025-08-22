@@ -53,6 +53,14 @@ For Wan2.1/2.2, please also refer to [Wan2.1/2.2 documentation](./docs/wan.md). 
 
 *This repository is under development.*
 
+### Sponsors
+
+We are grateful to the following companies for their generous sponsorship:
+
+<a href="https://aihub.co.jp/top-en">
+  <img src="./images/logo_aihub.png" alt="AiHUB Inc." height="100px">
+</a>
+
 ### Support the Project
 
 If you find this project helpful, please consider supporting its development via [GitHub Sponsors](https://github.com/sponsors/kohya-ss/). Your support is greatly appreciated!
