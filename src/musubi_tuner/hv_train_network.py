@@ -1651,7 +1651,10 @@ class NetworkTrainer:
         )
 
         if train_dataset_group.num_train_items == 0:
-            raise ValueError("No training items found in the dataset / データセットに学習データがありません")
+            raise ValueError(
+                "No training items found in the dataset. Please ensure that the latent/Text Encoder cache has been created beforehand."
+                " / データセットに学習データがありません。latent/Text Encoderキャッシュを事前に作成したか確認してください"
+            )
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
