@@ -1,0 +1,23 @@
+# Common parameters (resolution, caption_extension, batch_size, num_repeats, enable_bucket, bucket_no_upscale) 
+# can be set in either general or datasets sections
+# Video-specific parameters (target_frames, frame_extraction, frame_stride, frame_sample, max_frames, source_fps)
+# must be set in each datasets section
+
+# caption_extension is not required for metadata jsonl file
+# cache_directory is required for each dataset with metadata jsonl file
+
+# general configurations
+[general]
+resolution = [480, 832]
+batch_size = 1
+enable_bucket = true
+bucket_no_upscale = false
+
+[[datasets]]
+video_jsonl_file = "/mnt/cfs/jj/musubi-tuner/datasets/peel_it/video_captions.jsonl"
+target_frames = [81, 249]
+frame_extraction = "uniform"
+frame_sample = 4  # Add this: e.g., extract 4 evenly spaced samples per target_frames length
+cache_directory = "/mnt/cfs/jj/musubi-tuner/i2v_cache_peelit"
+#source_fps = 30.0 # optional, source fps for videos in the jsonl file
+max_frames= 321

@@ -991,6 +991,9 @@ def load_wan_model(
         )
         if dit_weight_dtype is not None:
             model.to(dit_weight_dtype)
+        logger.info(
+            f"WanModel created with model_version={model.model_version}, num_layers={model.num_layers}, num_heads={model.num_heads}"
+        )
 
     # load model weights with dynamic fp8 optimization and LoRA merging if needed
     logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")

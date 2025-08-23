@@ -51,6 +51,10 @@ class WanNetworkTrainer(NetworkTrainer):
 
     def handle_model_specific_args(self, args):
         self.config = WAN_CONFIGS[args.task]
+        logger.info(
+            f"WAN task: {args.task} | Using WAN {'2.2' if getattr(self.config, 'v2_2', False) else '2.1'} | "
+            f"i2v: {getattr(self.config, 'i2v', False)} | Fun-Control: {getattr(self.config, 'is_fun_control', False)}"
+        )
         # we cannot use config.i2v because Fun-Control T2V has i2v flag TODO refactor this
         self._i2v_training = "i2v" in args.task or "flf2v" in args.task
         self._control_training = self.config.is_fun_control
@@ -697,7 +701,7 @@ def wan_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     parser.add_argument("--dit_high_noise", type=str, required=False, default=None, help="DiT checkpoint path for high noise model")
     parser.add_argument(
         "--timestep_boundary",
-        type=int,
+        type=float,
         default=None,
         help="Timestep boundary for switching between high and low noise models, defaults to None (task specific) / 高ノイズモデルと低ノイズモデルを切り替えるタイムステップ境界。デフォルトはNone（タスク固有）",
     )

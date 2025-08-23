@@ -623,7 +623,7 @@ class WanVAE_(nn.Module):
         self._enc_feat_map = [None] * self._enc_conv_num
 
 
-def _video_vae(pretrained_path=None, z_dim=None, device="cpu", **kwargs):
+def _video_vae(pretrained_path=None, z_dim=None, device="cpu", dtype=torch.float32, **kwargs):
     """
     Autoencoder3d adapted from Stable Diffusion 1.x, 2.x and XL.
     """
@@ -639,17 +639,28 @@ def _video_vae(pretrained_path=None, z_dim=None, device="cpu", **kwargs):
     )
     cfg.update(**kwargs)
 
-    # init model
+    # init model on meta and then materialize empty tensors on target device/dtype
     with torch.device("meta"):
         model = WanVAE_(**cfg)
+
+    # materialize parameters/buffers without data on the target device
+    model.to_empty(device=device)
 
     # load checkpoint
     logging.info(f"loading {pretrained_path}")
     if os.path.splitext(pretrained_path)[-1] == ".safetensors":
         sd = load_file(pretrained_path)
-        model.load_state_dict(sd, strict=False, assign=True)
+        model.load_state_dict(sd, strict=False, assign=False)
     else:
-        model.load_state_dict(torch.load(pretrained_path, map_location=device, weights_only=True), assign=True)
+        model.load_state_dict(
+            torch.load(pretrained_path, map_location=device, weights_only=True),
+            strict=False,
+            assign=False,
+        )
+
+    # ensure desired dtype after weights are loaded
+    if dtype is not None:
+        model.to(dtype=dtype)
 
     return model
 
@@ -705,6 +716,8 @@ class WanVAE:
             _video_vae(
                 pretrained_path=vae_path,
                 z_dim=z_dim,
+                device=device,
+                dtype=dtype,
             )
             .eval()
             .requires_grad_(False)

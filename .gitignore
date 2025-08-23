@@ -10,3 +10,14 @@ CLAUDE.md
 GEMINI.md
 .claude/
 .gemini/
+
+# Ignore media and data files
+*.mp4
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.safetensors
+*.jsonl
+*.csv
+*.txt
