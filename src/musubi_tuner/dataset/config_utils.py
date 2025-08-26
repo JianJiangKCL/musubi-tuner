@@ -49,6 +49,8 @@ class ImageDatasetParams(BaseDatasetParams):
     fp_1f_target_index: Optional[int] = None
     fp_1f_no_post: Optional[bool] = False
     flux_kontext_no_resize_control: Optional[bool] = False  # if True, control images are not resized to target resolution
+    qwen_image_edit_no_resize_control: Optional[bool] = False  # if True, control images are not resized to target resolution
+    qwen_image_edit_control_resolution: Optional[Tuple[int, int]] = None  # if set, control images are resized to this resolution
 
 
 @dataclass
@@ -118,7 +120,9 @@ class ConfigSanitizer:
         "fp_1f_clean_indices": [int],
         "fp_1f_target_index": int,
         "fp_1f_no_post": bool,
-        "flux_kontext_no_resize_control": bool,  
+        "flux_kontext_no_resize_control": bool,
+        "qwen_image_edit_no_resize_control": bool,
+        "qwen_image_edit_control_resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
     }
     VIDEO_DATASET_DISTINCT_SCHEMA = {
         "video_directory": str,
@@ -255,7 +259,9 @@ class BlueprintGenerator:
 
 
 # if training is True, it will return a dataset group for training, otherwise for caching
-def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlueprint, training: bool = False) -> DatasetGroup:
+def generate_dataset_group_by_blueprint(
+    dataset_group_blueprint: DatasetGroupBlueprint, training: bool = False, num_timestep_buckets: Optional[int] = None
+) -> DatasetGroup:
     datasets: List[Union[ImageDataset, VideoDataset]] = []
 
     for dataset_blueprint in dataset_group_blueprint.datasets:
@@ -306,6 +312,8 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
         fp_1f_target_index: {dataset.fp_1f_target_index}
         fp_1f_no_post: {dataset.fp_1f_no_post}
         flux_kontext_no_resize_control: {dataset.flux_kontext_no_resize_control}
+        qwen_image_edit_no_resize_control: {dataset.qwen_image_edit_no_resize_control}
+        qwen_image_edit_control_resolution: {dataset.qwen_image_edit_control_resolution}
     \n"""
                 ),
                 "    ",
@@ -337,7 +345,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
         # logger.info(f"[Dataset {i}]")
         dataset.set_seed(seed)
         if training:
-            dataset.prepare_for_training()
+            dataset.prepare_for_training(num_timestep_buckets=num_timestep_buckets)
 
     return DatasetGroup(datasets)
 

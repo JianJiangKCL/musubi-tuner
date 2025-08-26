@@ -8,6 +8,7 @@
 <summary>クリックすると展開します</summary>
 
 - [はじめに](#はじめに)
+    - [スポンサー](#スポンサー)
     - [スポンサー募集のお知らせ](#スポンサー募集のお知らせ)
     - [最近の更新](#最近の更新)
     - [リリースについて](#リリースについて)
@@ -43,6 +44,14 @@ Wan2.1/2.2については、[Wan2.1/2.2のドキュメント](./docs/wan.md)も�
 
 *リポジトリは開発中です。*
 
+### スポンサー
+
+このプロジェクトを支援してくださる企業・団体の皆様に深く感謝いたします。
+
+<a href="https://aihub.co.jp/">
+  <img src="./images/logo_aihub.png" alt="AiHUB株式会社" title="AiHUB株式会社" height="100px">
+</a>
+
 ### スポンサー募集のお知らせ
 
 このプロジェクトがお役に立ったなら、ご支援いただけると嬉しく思います。 [GitHub Sponsors](https://github.com/sponsors/kohya-ss/)で受け付けています。
@@ -52,39 +61,21 @@ Wan2.1/2.2については、[Wan2.1/2.2のドキュメント](./docs/wan.md)も�
 
 - GitHub Discussionsを有効にしました。コミュニティのQ&A、知識共有、技術情報の交換などにご利用ください。バグ報告や機能リクエストにはIssuesを、質問や経験の共有にはDiscussionsをご利用ください。[Discussionはこちら](https://github.com/kohya-ss/musubi-tuner/discussions)
 
-- 2025/08/11
-    - `--timestep_sampling`に`qwen_shift`が追加されました。これはQwen-Imageの推論時と同じ方法で、各画像の解像度に基づいた動的シフト値を使用します。またこれに伴い`qinglong`は`qinglong_flux`と`qinglong_qwen`に分割されました。PR [#428](https://github.com/kohya-ss/musubi-tuner/pull/428) sdbds氏に感謝します。詳細は[Qwen-Imageのドキュメント](./docs/qwen_image.md#timestep_sampling--タイムステップのサンプリング)および[高度な設定](./docs/advanced_config.md#style-friendly-snr-sampler)を参照してください。
-    - `wan_generate_video.py` でWan2.2のhigh/lowモデルを使用するときに、遅延読み込みを行う`--lazy_loading`オプションを追加しました。PR [#427](https://github.com/kohya-ss/musubi-tuner/pull/427) 詳細は[こちら](./docs/wan.md#inference--推論)を参照してください。
+- 2025/08/24
+    - Wan2.1/2.2の学習、推論時のピークメモリ使用量を削減しました。PR [#493](https://github.com/kohya-ss/musubi-tuner/pull/493) 動画のフレームサイズ、フレーム数にもよりますが重み以外のメモリ使用量が10%程度削減される可能性があります。
 
-- 2025/08/10
-    - Qwen-Imageに対応しました。PR [#408](https://github.com/kohya-ss/musubi-tuner/pull/408) 詳細は[Qwen-Imageのドキュメント](./docs/qwen_image.md)を参照してください。
-    
-- 2025/08/09
-    - wandbにログ出力用設定しているとき、サンプル生成画像もwandbに出力されるようになりました。PR [#420](https://github.com/kohya-ss/musubi-tuner/pull/420) xhiroga 氏に感謝します。
+- 2025/08/22
+    - Qwen-Image-Editに対応しました。PR [#473](https://github.com/kohya-ss/musubi-tuner/pull/473) 詳細は[Qwen-Imageのドキュメント](./docs/qwen_image.md)を参照してください。変更が多岐に渡るため既存機能へ影響がある可能性があります。不具合が発生した場合は、[Issues](https://github.com/kohya-ss/musubi-tuner/issues)でご報告ください。
+    - **破壊的変更**: この変更に伴いFLUX.1 Kontextのキャッシュフォーマットが変更されました。Latentキャッシュを再作成してください。
 
-- 2025/08/08
-    - Wan2.2に対応しました。PR [#399](https://github.com/kohya-ss/musubi-tuner/pull/399) 詳細は[Wan2.1/2.2のドキュメント](./docs/wan.md)を参照してください。
-    
-        Wan2.2はhigh noiseとlow noiseの二つのモデルから構成され、LoRAの学習時にどちらか一方、または両方を選択することができます。それに伴いtimestepの指定が必要になりますので、ドキュメントをご確認ください。
+- 2025/08/18
+    - `qwen_image_train_network.py`の訓練時の`--network_module networks.lora_qwen_image`の指定について、ドキュメントへの記載が漏れていました。[ドキュメント](./docs/qwen_image.md#training--学習)を修正しました。
 
-- 2025/08/07
-    - タイムステップのサンプリングに新しく `logsnr` と `qinglong` のサンプリング手法を追加しました。PR [#407](https://github.com/kohya-ss/musubi-tuner/pull/407) でsdbds氏により提案されました。sdbds氏に感謝します。logsnrはスタイルの学習に特化し、qinglongはスタイル学習、モデルの安定性、ディテールの再現性を考慮したハイブリッドサンプリング手法です。詳細は[こちらのドキュメント](./docs/advanced_config.md#style-friendly-snr-sampler)を参照してください。
+- 2025/08/16
+    - Qwen-ImageのVLMを利用したキャプション生成ツールを追加しました。PR [#460](https://github.com/kohya-ss/musubi-tuner/pull/460) 詳細は[ドキュメント](./docs/tools.md#image-captioning-with-qwen25-vl-srcmusubi_tunercaption_images_by_qwen_vlpy)を参照してください。
 
-- 2025/08/02
-    - `--fp8_scaled`を指定したときのFramePack、Wan2.1のモデル読み込みのピークメモリ使用量を削減しました。これにより、学習、推論前のモデル読み込み時のVRAM使用量が削減されます。
-
-- 2025/08/01
-    - FLUX. KontextのLoRA学習でblock swapが動作しない不具合を修正しました。[PR #402](https://github.com/kohya-ss/musubi-tuner/pull/402) および [PR #403](https://github.com/kohya-ss/musubi-tuner/pull/403) sdbds氏に感謝します。
-
-- 2025/07/31
-    - [AI コーディングエージェントを使用する開発者の方へのセクション](#aiコーディングエージェントを使用する開発者の方へ)を追加しました。AIエージェントを利用する場合はご一読ください。
-
-- 2025/07/29
-    - 依存関係が不足していてFLUX.1 KontextのLoRA学習ができない不具合を修正しました。`sentencepiece`が必要です。
-        - `pyproject.toml`に`sentencepiece`を追加しました。
-
-- 2025/07/28
-    - FLUX.1 KontextのLoRA学習を追加しました。詳細は[FLUX.1 KontextのLoRA学習のドキュメント](./docs/flux_kontext.md)を参照してください。
+- 2025/08/15
+    - Timestep Bucketing機能が追加されました。これにより、タイムステップの分布がより均一になり、学習が安定します。PR [#418](https://github.com/kohya-ss/musubi-tuner/pull/418) 詳細は[Timestep Bucketingのドキュメント](./docs/advanced_config.md#timestep-bucketing-for-uniform-sampling--均一なサンプリングのためのtimestep-bucketing)を参照してください。
 
 ### リリースについて
 
@@ -409,7 +400,7 @@ SkyReels V1はclassifier free guidance（ネガティブプロンプト）を必
 
 ### LoRAの形式の変換
 
-ComfyUIで使用可能な形式（Diffusion-pipeと思われる）への変換は以下のコマンドで行えます。
+他の推論環境（DiffusersやComfyUI）で使用可能な形式（Diffusion-pipe または Diffusers と思われる）への変換は以下のコマンドで行えます。
 
 ```bash
 python src/musubi_tuner/convert_lora.py --input path/to/musubi_lora.safetensors --output path/to/another_format.safetensors --target other
@@ -419,7 +410,7 @@ python src/musubi_tuner/convert_lora.py --input path/to/musubi_lora.safetensors 
 
 `--target`には`other`を指定してください。`default`を指定すると、他の形式から当リポジトリの形式に変換できます。
 
-Wan2.1も対応済みです。
+Wan2.1およびQwen-Imageも対応済みです。Diffusersで推論する場合、`--diffusers_prefix transformers` が追加で必要かもしれません。
 
 ## その他
 

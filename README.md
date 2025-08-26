@@ -10,6 +10,7 @@
 - [Musubi Tuner](#musubi-tuner)
   - [Table of Contents](#table-of-contents)
   - [Introduction](#introduction)
+    - [Sponsors](#sponsors)
     - [Support the Project](#support-the-project)
     - [Recent Updates](#recent-updates)
     - [Releases](#releases)
@@ -53,6 +54,14 @@ For Wan2.1/2.2, please also refer to [Wan2.1/2.2 documentation](./docs/wan.md). 
 
 *This repository is under development.*
 
+### Sponsors
+
+We are grateful to the following companies for their generous sponsorship:
+
+<a href="https://aihub.co.jp/top-en">
+  <img src="./images/logo_aihub.png" alt="AiHUB Inc." title="AiHUB Inc." height="100px">
+</a>
+
 ### Support the Project
 
 If you find this project helpful, please consider supporting its development via [GitHub Sponsors](https://github.com/sponsors/kohya-ss/). Your support is greatly appreciated!
@@ -61,41 +70,21 @@ If you find this project helpful, please consider supporting its development via
 
 - GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
-- August 11, 2025:
-    - Added `--timestep_sampling` option with `qwen_shift`. This uses the same method as during inference for Qwen-Image, employing dynamic shift values based on the resolution of each image (typically around 2.2 for 1328x1328 images). Additionally, `qinglong` has been split into `qinglong_flux` and `qinglong_qwen`. Thanks to sdbds for [PR #428](https://github.com/kohya-ss/musubi-tuner/pull/428). 
-    
-        For details, see the [Qwen-Image documentation](./docs/qwen_image.md#timestep_sampling--タイムステップのサンプリング) and [Advanced Configuration](./docs/advanced_config.md#style-friendly-snr-sampler).
+- August 24, 2025
+    - Reduced peak memory usage during training and inference for Wan2.1/2.2. PR [#493](https://github.com/kohya-ss/musubi-tuner/pull/493) This may reduce memory usage by about 10% for non-weight tensors, depending on the video frame size and number of frames.
 
-    - Added `--lazy_loading` option for delayed loading of DiT models when using Wan2.2 high/low models in `wan_generate_video.py`. [PR #427](https://github.com/kohya-ss/musubi-tuner/pull/427) See [Wan2.2 documentation](./docs/wan.md#inference--推論) for details.
+- August 22, 2025:
+    - Qwen-Image-Edit support has been added. See PR [#473](https://github.com/kohya-ss/musubi-tuner/pull/473) and the [Qwen-Image documentation](./docs/qwen_image.md) for details. This change may affect existing features due to its extensive nature. If you encounter any issues, please report them in the [Issues](https://github.com/kohya-ss/musubi-tuner/issues).
+    - **Breaking Change**: The cache format for FLUX.1 Kontext has been changed with this update. Please recreate the latent cache.
 
-- August 10, 2025:
-    - Added support for Qwen-Image. See [Qwen-Image documentation](./docs/qwen_image.md) for details.
+- August 18, 2025:
+    - The option `--network_module networks.lora_qwen_image` was missing from the documentation for training with `qwen_image_train_network.py`. The [documentation](./docs/qwen_image.md#training--学習) has been fixed to include this information.
 
-- August 9, 2025:
-    - When logging to wandb, sample generation images are now also logged to wandb. Thanks to xhiroga for [PR #420](https://github.com/kohya-ss/musubi-tuner/pull/420).
-    
-- August 8, 2025:
-    - Added support for Wan2.2.  [PR #399](https://github.com/kohya-ss/musubi-tuner/pull/399). See [Wan2.1/2.2 documentation](./docs/wan.md). 
+- August 16, 2025:
+    - Added a tool for captioning images using Qwen-Image VLM. PR [#460](https://github.com/kohya-ss/musubi-tuner/pull/460) See [here](./docs/tools.md#image-captioning-with-qwen25-vl-srcmusubi_tunercaption_images_by_qwen_vlpy) for more details.
 
-        Wan2.2 consists of two models: high noise and low noise. During LoRA training, you can choose either one or both. Please refer to the documentation for details on specifying timesteps.
-
-- August 7, 2025:
-    - Added new sampling methods for timesteps: `logsnr` and `qinglong`. Thank you to sdbds for proposing this in [PR #407](https://github.com/kohya-ss/musubi-tuner/pull/407). `logsnr` is designed for style learning, while `qinglong` is a hybrid sampling method that considers style learning, model stability, and detail reproduction. For details, see the [Style-friendly SNR Sampler documentation](./docs/advanced_config.md#style-friendly-snr-sampler).
-
-- August 2, 2025:
-    - Reduced peak memory usage during model loading for FramePack and Wan2.1 when using `--fp8_scaled`. This reduces VRAM usage during model loading before training and inference.
-
-- August 1, 2025:
-    - Fixed the issue where block swapping did not work in FLUX. Kontext LoRA training. Thanks to sdbds for [PR #402](https://github.com/kohya-ss/musubi-tuner/pull/402). [PR #403](https://github.com/kohya-ss/musubi-tuner/pull/403).
-
-- July 31, 2025:
-    - Added [a section for developers using AI coding agents](#for-developers-using-ai-coding-agents). If you are using AI agents, please read this section.
-
-- July 29, 2025:
-    - Added `sentencepiece` to `pyproject.toml` to fix the issue where FLUX.1 Kontext LoRA training was not possible due to missing dependencies.
-
-- July 28, 2025:
-    - Added LoRA training for FLUX.1 Kontext \[dev\]. For details, see the [FLUX.1 Kontext LoRA training documentation](./docs/flux_kontext.md).
+- August 15, 2025:
+    - The Timestep Bucketing feature has been added, which allows for a more uniform distribution of timesteps and stabilizes training. See PR [#418](https://github.com/kohya-ss/musubi-tuner/pull/418) and the [Timestep Bucketing documentation](./docs/advanced_config.md#timestep-bucketing-for-uniform-sampling--均一なサンプリングのためのtimestep-bucketing) for details.
 
 ### Releases
 
@@ -479,7 +468,7 @@ You can also perform image2video inference with SkyReels V1 I2V model. Specify t
 
 ### Convert LoRA to another format
 
-You can convert LoRA to a format compatible with ComfyUI (presumed to be Diffusion-pipe) using the following command:
+You can convert LoRA to a format (presumed to be Diffusion-pipe) compatible with another inference environment (Diffusers, ComfyUI etc.) using the following command:
 
 ```bash
 python src/musubi_tuner/convert_lora.py --input path/to/musubi_lora.safetensors --output path/to/another_format.safetensors --target other
@@ -495,7 +484,7 @@ Specify the input and output file paths with `--input` and `--output`, respectiv
 
 Specify `other` for `--target`. Use `default` to convert from another format to the format of this repository.
 
-Wan2.1 is also supported. 
+Wan2.1 and Qwen-Image are also supported. `--diffusers_prefix transformers` may be required for Diffusers inference.
 
 ## Miscellaneous
 
