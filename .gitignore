@@ -1,23 +1,40 @@
-__pycache__/
-.venv
-venv/
-logs/
-uv.lock
-main.exp
-main.lib
-main.obj
-CLAUDE.md
-GEMINI.md
-.claude/
-.gemini/
+# Ignore everything by default
+*
 
-# Ignore media and data files
-*.mp4
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.safetensors
-*.jsonl
-*.csv
-*.txt
+# But not these directories (allows recursion into subdirectories)
+!*/
+
+# Keep these file types
+!*.py
+!*.sh
+!*.yaml
+!*.yml
+!*.toml
+
+# Keep .gitignore itself
+!.gitignore
+
+# Explicitly ignore sensitive files (even though * already covers them)
+# SSH Keys
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+id_*
+*.pem
+*.key
+
+# API Keys and Secrets
+.env
+.env.*
+*_secret
+*_token
+api_key*
+*api_key*
+secret_*
+token_*
+
+# Credentials
+credentials
+credentials.json
+config.json
