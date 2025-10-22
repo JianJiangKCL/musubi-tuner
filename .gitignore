@@ -6,10 +6,8 @@
 
 # Keep these file types
 !*.py
-!*.sh
 !*.yaml
 !*.yml
-!*.toml
 
 # Keep .gitignore itself
 !.gitignore
