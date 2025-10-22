@@ -5,6 +5,10 @@ import json
 import requests
 from io import BytesIO
 import math
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # 创建缓存目录
 os.makedirs('results', exist_ok=True)
