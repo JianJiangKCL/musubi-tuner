@@ -74,11 +74,19 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
 
         # Router config
         self.router_config = {
-            "routing_mode": getattr(args, "routing_mode", "rule_based"),
+            "routing_mode": getattr(args, "routing_mode", "learned"),  # Default to learned for stage_b
             "top_k": getattr(args, "router_top_k", 2),
             "temperature": getattr(args, "router_temperature", 0.7),
             "ema_beta": getattr(args, "router_ema_beta", 0.9),
+            "learnable_hidden_dim": getattr(args, "router_hidden_dim", 64),
+            "input_dim": getattr(args, "router_input_dim", 512),
+            "use_text_conditioning": getattr(args, "use_text_conditioning", False),
         }
+
+        # Router training flag (for stage_b)
+        self.train_router_in_stage_b = getattr(args, "train_router", True)  # Default: train router in stage_b
+        self.use_teacher_guidance = getattr(args, "use_teacher_guidance", True)  # Use rule-based as teacher
+        self.teacher_kl_weight = getattr(args, "teacher_kl_weight", 1.0)
 
         # Target blocks
         target_blocks_str = getattr(args, "target_blocks", "last_8")
@@ -144,9 +152,16 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
             self.lora_moe_network.load_lora_moe_weights(self.base_lora_weights)
 
         # Prepare for training stage
-        self.lora_moe_network.prepare_for_training_stage(self.training_stage)
+        train_router = self.train_router_in_stage_b if self.training_stage == "stage_b" else False
+        self.lora_moe_network.prepare_for_training_stage(self.training_stage, train_router=train_router)
 
         logger.info(f"LoRA-MoE network ready for {self.training_stage}")
+        if self.training_stage == "stage_b" and train_router:
+            logger.info(f"  Router training: ENABLED (mode: {self.router_config['routing_mode']})")
+            if self.use_teacher_guidance:
+                logger.info(f"  Teacher guidance: ENABLED (KL weight: {self.teacher_kl_weight})")
+        else:
+            logger.info(f"  Router training: DISABLED (using rule-based routing)")
 
     def setup_loss_function(self):
         """
@@ -277,7 +292,26 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
         # Get instrument logits for routing
         instrument_logits = self.get_instrument_logits_from_batch(batch)
 
-        # Set routing gates
+        # Compute teacher gates (rule-based) if using teacher guidance
+        teacher_gates = None
+        if self.training_stage == "stage_b" and self.use_teacher_guidance and self.train_router_in_stage_b:
+            # Create a temporary rule-based router for teacher guidance
+            from musubi_tuner.networks.lora_moe import InstrumentRouter
+            teacher_router = InstrumentRouter(
+                num_experts=self.lora_moe_config["num_experts"],
+                routing_mode="rule_based",
+                top_k=self.router_config["top_k"],
+                temperature=self.router_config["temperature"],
+            ).to(instrument_logits.device)
+
+            with torch.no_grad():
+                teacher_gates = teacher_router(
+                    instrument_logits=instrument_logits,
+                    apply_topk=True,
+                    apply_ema=False,
+                )
+
+        # Set routing gates (learned router if training, else rule-based)
         self.lora_moe_network.set_routing_gates(
             instrument_logits=instrument_logits,
             text_embeddings=None,  # Optional: add text conditioning
@@ -296,7 +330,7 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
         model_pred = batch.get("model_pred")  # You'll get this from your model forward
         target = batch.get("target")          # Target noise
 
-        # Get routing gates for loss
+        # Get routing gates for loss (current learned gates)
         routing_gates = self.lora_moe_network.router.ema_gates.unsqueeze(0)
 
         # Compute loss
@@ -307,7 +341,7 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
             roi_mask=roi_mask,
             instrument_labels=batch.get("instrument_labels"),
             routing_gates=routing_gates,
-            teacher_gates=None,  # For stage C
+            teacher_gates=teacher_gates,  # Rule-based teacher for KL guidance
             stage=self.training_stage,
         )
 
@@ -369,12 +403,24 @@ def setup_parser() -> argparse.ArgumentParser:
                       help="Which blocks to adapt: 'last_8', 'last_6', or list like '[32,33,34,35,36,37,38,39]'")
 
     # Router config
-    parser.add_argument("--routing_mode", type=str, default="rule_based",
+    parser.add_argument("--routing_mode", type=str, default="learned",
                       choices=["rule_based", "learned"],
-                      help="Routing mode")
+                      help="Routing mode (default: learned for stage_b)")
     parser.add_argument("--router_top_k", type=int, default=2, help="Top-k routing")
     parser.add_argument("--router_temperature", type=float, default=0.7, help="Router temperature")
     parser.add_argument("--router_ema_beta", type=float, default=0.9, help="Router EMA beta")
+    parser.add_argument("--router_hidden_dim", type=int, default=64, help="Router MLP hidden dimension")
+    parser.add_argument("--router_input_dim", type=int, default=512, help="Router input dimension")
+    parser.add_argument("--use_text_conditioning", action="store_true", default=False,
+                      help="Use text embeddings for routing")
+
+    # Router training (for stage_b)
+    parser.add_argument("--train_router", action="store_true", default=True,
+                      help="Train router in stage_b (default: True for simultaneous training)")
+    parser.add_argument("--use_teacher_guidance", action="store_true", default=True,
+                      help="Use rule-based router as teacher for learned router")
+    parser.add_argument("--teacher_kl_weight", type=float, default=1.0,
+                      help="KL divergence weight for teacher guidance")
 
     # Loss weights
     parser.add_argument("--weight_base_diffusion", type=float, default=1.0, help="Base diffusion loss weight")

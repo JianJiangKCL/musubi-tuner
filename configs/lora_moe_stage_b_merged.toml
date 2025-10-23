@@ -1,0 +1,190 @@
+# LoRA-MoE Stage B Configuration: Expert LoRAs + Router Training (MERGED)
+# Train instrument-specific experts AND learnable router simultaneously
+# This is the main MoE training stage after vanilla LoRA (Stage 1)
+
+[general]
+task = "t2v-A14B"
+training_stage = "stage_b"
+output_dir = "./outputs/lora_moe_stage_b"
+logging_dir = "./logs/lora_moe_stage_b"
+
+[model]
+# WAN model paths (same as Stage 1)
+dit = "./models/wan2.2/wan_t2v_A14B.safetensors"
+dit_high_noise = "./models/wan2.2/wan_t2v_A14B_high_noise.safetensors"
+vae = "./models/wan2.2/vae.safetensors"
+t5 = "./models/t5-v1_1-xxl"
+clip = "./models/clip-vit-large-patch14"
+
+# IMPORTANT: Load vanilla LoRA weights from Stage 1 as base LoRA
+# This will be frozen and used as the shared adaptation
+base_lora_weights = "./outputs/vanilla_lora/lora_final.safetensors"
+
+[lora_moe]
+# LoRA configuration (must match Stage 1 vanilla LoRA)
+lora_dim = 4
+lora_alpha = 1.0
+num_experts = 4
+expert_names = ["Scissors", "Hook/Electrocautery", "Suction", "Other"]
+use_base_lora = true  # Use vanilla LoRA as frozen base
+
+# Dropouts (for expert training)
+lora_dropout = 0.0
+lora_rank_dropout = 0.05  # Slightly higher for experts to prevent overfitting
+lora_module_dropout = 0.0
+
+# Projection-specific ranks (must match Stage 1)
+rank_q = 8
+rank_k = 4
+rank_v = 4
+rank_o = 4
+rank_ffn = 4
+
+# Target blocks (must match Stage 1)
+target_blocks = "last_8"
+
+[router]
+# LEARNABLE ROUTER (trained simultaneously with experts)
+routing_mode = "learned"  # Train MLP router
+router_top_k = 2
+router_temperature = 0.7
+router_ema_beta = 0.9
+
+# Router MLP architecture
+router_hidden_dim = 64
+router_input_dim = 512  # Depends on instrument classifier output dimension
+
+# Text conditioning (optional)
+use_text_conditioning = false  # Set to true to also condition on text prompts
+
+# Router training flags
+train_router = true  # ENABLE router training in stage_b
+use_teacher_guidance = true  # Use rule-based router as teacher
+teacher_kl_weight = 1.0  # KL divergence from learned to rule-based
+
+[training]
+# Training hyperparameters
+batch_size = 1
+gradient_accumulation_steps = 8
+num_train_epochs = 20  # Longer training for both experts + router
+learning_rate = 5e-5   # Moderate LR for joint training
+
+# Different learning rates for experts vs router (optional)
+# You can use optimizer groups in the training loop
+lr_experts = 5e-5
+lr_router = 1e-4  # Slightly higher LR for router
+
+lr_scheduler = "cosine"
+lr_warmup_steps = 100
+
+# Mixed precision
+mixed_precision = "bf16"
+
+# Gradient settings
+max_grad_norm = 1.0
+
+# Checkpointing
+save_steps = 500
+save_total_limit = 3
+
+# Logging
+logging_steps = 10
+
+# Early stopping (monitor ROI metrics + routing entropy)
+early_stopping_patience = 5
+early_stopping_metric = "total_loss"  # Or "roi_loss"
+
+[data]
+# Dataset configuration
+train_data_dir = "./data/surgical_videos"
+instrument_data_path = "./Lap/preprocessing/filtered_clips_processed.jsonl"
+
+# CRITICAL: Ensure instrument labels are available
+# Each sample should have "instrument_label" field (0-3)
+# Or use instrument classifier to generate labels on-the-fly
+
+# Balanced sampling across instruments
+balanced_instrument_sampling = true
+# This ensures each batch has diverse instruments for router training
+
+# Video parameters (must match Stage 1)
+frame_num = 81
+resolution = "720p"
+frame_sample_method = "uniform"
+
+# Preprocessing
+random_flip = false
+random_crop = false
+
+# Timestep sampling (focus on mid-late timesteps where shape crystallizes)
+timestep_range = [0.2, 1.0]  # Apply experts for t ∈ [0.2, 1.0]
+
+[loss]
+# Loss weights for Stage B (Experts + Router)
+weight_base_diffusion = 1.0
+weight_roi_recon = 3.0
+
+# Identity preservation and temporal consistency
+weight_identity = 0.5       # Enable if you have instrument classifier
+weight_temporal = 0.5       # Enable if you have optical flow model
+
+# Routing regularization (IMPORTANT for joint training)
+weight_routing_entropy = 0.02     # Prevent collapsed routing
+weight_routing_load_balance = 0.1  # Encourage uniform expert usage
+
+# Teacher KL guidance (applied via teacher_kl_weight in router config)
+# This is automatically included when use_teacher_guidance=true
+
+# Loss options
+use_roi_loss = true
+use_identity_loss = true   # Requires instrument classifier
+use_temporal_loss = false  # Optional: requires flow model
+
+# ROI parameters
+roi_weight_multiplier = 5.0  # Higher emphasis on tips
+
+[optimizer]
+# Use separate optimizer groups for experts and router (optional)
+# This allows different learning rates
+
+optimizer_type = "AdamW"
+adam_beta1 = 0.9
+adam_beta2 = 0.999
+adam_epsilon = 1e-8
+weight_decay = 0.01
+
+# Gradient clipping
+max_grad_norm = 1.0
+
+[misc]
+seed = 42
+num_workers = 4
+gradient_checkpointing = true
+offload_inactive_dit = true
+
+# Instrument classifier for routing and identity loss
+# You need to provide this or train one separately
+instrument_classifier_path = "./models/instrument_classifier.pth"  # Optional but recommended
+
+# ROI detector for mask generation (optional)
+roi_detector_path = "./models/roi_detector.pth"  # Optional
+
+[notes]
+# Training Pipeline:
+# 1. Stage 1 (Already done): Vanilla LoRA training on WAN2.2
+#    - Output: ./outputs/vanilla_lora/lora_final.safetensors
+#    - This learns basic surgical video knowledge
+#
+# 2. Stage 2 (This config): Expert LoRAs + Router
+#    - Load vanilla LoRA as frozen base
+#    - Train 4 expert LoRAs for instrument-specific adaptation
+#    - Train learnable router with rule-based teacher guidance
+#    - Output: ./outputs/lora_moe_stage_b/lora_moe_final.safetensors
+#
+# Advantages of merged Stage B:
+# - Experts and router co-adapt during training
+# - Router learns to route based on actual expert specializations
+# - Faster than 3-stage pipeline (no separate router training)
+# - More stable: teacher guidance prevents routing collapse
+#
+# Total Training Time: ~5-7 hours on 1xA100 (20 epochs)

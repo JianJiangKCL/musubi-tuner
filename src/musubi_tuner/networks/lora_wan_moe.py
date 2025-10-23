@@ -243,18 +243,24 @@ class WanLoRAMoENetwork(LoRAMoENetwork):
 
         print(f"  Replaced {module_name} with LoRA-MoE (rank={rank})")
 
-    def prepare_for_training_stage(self, stage: str):
+    def prepare_for_training_stage(self, stage: str, train_router: bool = False):
         """
         Prepare network for specific training stage.
 
         Stages:
-        - "stage_a": Base LoRA only (freeze experts)
-        - "stage_b": Train experts (freeze base LoRA)
-        - "stage_c": Train router (freeze base + experts)
+        - "stage_a": Base LoRA only (freeze experts and router)
+        - "stage_b": Train experts + router simultaneously (freeze base LoRA)
+                    This is the recommended 2-stage approach after vanilla LoRA training
+        - "stage_b_experts_only": Train experts only with fixed rule-based routing (freeze base)
+        - "stage_c": Train router only (freeze base + experts) - rarely used
+
+        Args:
+            stage: Training stage identifier
+            train_router: If True in stage_b, enables router training (default for stage_b)
         """
         if stage == "stage_a":
-            # Stage A: Train base LoRA only
-            print("Stage A: Training base LoRA (freezing experts)")
+            # Stage A: Train base LoRA only (this is vanilla LoRA training)
+            print("Stage A: Training base LoRA (freezing experts and router)")
             for module in self.lora_moe_modules:
                 # Enable base LoRA gradients
                 if module.base_lora_down is not None:
@@ -276,9 +282,48 @@ class WanLoRAMoENetwork(LoRAMoENetwork):
                     for param in module.timestep_gate.parameters():
                         param.requires_grad = False
 
+            # Freeze router
+            for param in self.router.parameters():
+                param.requires_grad = False
+
         elif stage == "stage_b":
-            # Stage B: Train experts (freeze base)
-            print("Stage B: Training expert LoRAs (freezing base)")
+            # Stage B: Train experts + router simultaneously (RECOMMENDED)
+            # This is the main MoE training stage after vanilla LoRA
+            print("Stage B: Training expert LoRAs + Router simultaneously (freezing base LoRA)")
+            for module in self.lora_moe_modules:
+                # Freeze base LoRA (use pretrained vanilla LoRA)
+                if module.base_lora_down is not None:
+                    for param in module.base_lora_down.parameters():
+                        param.requires_grad = False
+                    for param in module.base_lora_up.parameters():
+                        param.requires_grad = False
+
+                # Enable expert gradients
+                for expert_down in module.expert_lora_down:
+                    for param in expert_down.parameters():
+                        param.requires_grad = True
+                for expert_up in module.expert_lora_up:
+                    for param in expert_up.parameters():
+                        param.requires_grad = True
+
+                # Enable timestep gate
+                if module.timestep_gate is not None:
+                    for param in module.timestep_gate.parameters():
+                        param.requires_grad = True
+
+            # Enable router (default behavior for stage_b)
+            if train_router or self.router.routing_mode == "learned":
+                print("  - Router training: ENABLED")
+                for param in self.router.parameters():
+                    param.requires_grad = True
+            else:
+                print("  - Router training: DISABLED (using rule-based routing)")
+                for param in self.router.parameters():
+                    param.requires_grad = False
+
+        elif stage == "stage_b_experts_only":
+            # Alternative: Train experts only with rule-based routing
+            print("Stage B (Experts Only): Training expert LoRAs with fixed routing (freezing base)")
             for module in self.lora_moe_modules:
                 # Freeze base LoRA
                 if module.base_lora_down is not None:
@@ -300,9 +345,13 @@ class WanLoRAMoENetwork(LoRAMoENetwork):
                     for param in module.timestep_gate.parameters():
                         param.requires_grad = True
 
+            # Freeze router (use rule-based)
+            for param in self.router.parameters():
+                param.requires_grad = False
+
         elif stage == "stage_c":
-            # Stage C: Train router (freeze LoRAs)
-            print("Stage C: Training router (freezing all LoRAs)")
+            # Stage C: Train router only (rarely used, only if you want to fine-tune router later)
+            print("Stage C: Training router only (freezing all LoRAs)")
             for module in self.lora_moe_modules:
                 # Freeze everything
                 for param in module.parameters():
