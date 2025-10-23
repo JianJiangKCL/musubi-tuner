@@ -136,8 +136,8 @@ weight_routing_load_balance = 0.1  # Encourage uniform expert usage
 # This is automatically included when use_teacher_guidance=true
 
 # Loss options
-use_roi_loss = true
-use_identity_loss = true   # Requires instrument classifier
+use_roi_loss = false
+use_identity_loss = false   # Requires instrument classifier
 use_temporal_loss = false  # Optional: requires flow model
 
 # ROI parameters

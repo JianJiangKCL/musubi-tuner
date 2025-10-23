@@ -14,11 +14,21 @@ set -e  # Exit on error
 # ============================================================================
 
 # Paths (ADJUST THESE TO YOUR SETUP)
-PROJECT_ROOT="/mnt/cfs/jj/musubi-tuner"
-DATA_ROOT="/mnt/cfs/jj/musubi-tuner/test_outputs/tmp_data"
+PROJECT_ROOT="/mnt/cfs/jj/proj/musubi-tuner"
+DATA_ROOT="/mnt/cfs/jj/proj/musubi-tuner/Lap"
 CACHE_ROOT="/mnt/cfs/jj/proj/musubi-tuner/Lap/cache/trace50_allvideos_20s"
 CKPT_ROOT="/mnt/cfs/jj/ckpt/Wan2.2-I2V-A14B"
 
+# Ensure src-layout package is importable
+export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH}"
+
+# Activate conda environment
+source /data1/miniconda3/etc/profile.d/conda.sh
+conda activate musu
+
+# Output directory
+OUTPUT_DIR="${PROJECT_ROOT}/outputs/lora_moe_stage2"
+mkdir -p "${OUTPUT_DIR}"
 # Dataset config (from Stage 1)
 DATASET_CONFIG="${DATA_ROOT}/config/trace50_all_videos_20s.toml"
 
@@ -28,18 +38,16 @@ CLIPS_WITH_INSTRUMENTS="${PROJECT_ROOT}/Lap/preprocessing/filtered_clips_with_in
 
 # Stage 1 vanilla LoRA weights (REQUIRED)
 # This is the output from your previous LoRA training
-VANILLA_LORA_WEIGHTS="${PROJECT_ROOT}/outputs/vanilla_lora/lora_final.safetensors"
+VANILLA_LORA_WEIGHTS="/mnt/cfs/jj/proj/musubi-tuner/Lap/lora_outputs/all_videos_20s/high_noise_trace50/20s-of-lorac.safetensors"
 
 # Model checkpoints
-DIT_PATH="${CKPT_ROOT}/Wan2.2-I2V-A14B.pth"
-DIT_HIGH_NOISE_PATH="${CKPT_ROOT}/Wan2.2-I2V-A14B_high_noise.pth"  # If using WAN2.2
+DIT_PATH="${CKPT_ROOT}/low_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors"
+DIT_HIGH_NOISE_PATH="${CKPT_ROOT}/high_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors"  # WAN2.2 split weights
 VAE_PATH="${CKPT_ROOT}/Wan2.1_VAE.pth"
 T5_PATH="${CKPT_ROOT}/models_t5_umt5-xxl-enc-bf16.pth"
 CLIP_PATH="${CKPT_ROOT}/clip-vit-large-patch14"  # Or appropriate CLIP path
 
-# Output directory
-OUTPUT_DIR="${PROJECT_ROOT}/outputs/lora_moe_stage2"
-mkdir -p "${OUTPUT_DIR}"
+
 
 # ============================================================================
 # Pre-flight Checks
@@ -66,6 +74,8 @@ if [ ! -d "${CACHE_ROOT}" ]; then
     exit 1
 fi
 echo "✓ Found cache directory: ${CACHE_ROOT}"
+
+# Ensure dataset config already points to the correct cache_directory in Stage 1 config
 
 # Check instrument-augmented clips
 if [ ! -f "${CLIPS_WITH_INSTRUMENTS}" ]; then
@@ -153,8 +163,9 @@ echo "=== Starting LoRA-MoE Training ==="
 echo "Output directory: ${OUTPUT_DIR}"
 echo ""
 
-python "${PROJECT_ROOT}/src/musubi_tuner/wan_train_lora_moe.py" \
-    --task t2v-A14B \
+python -m musubi_tuner.wan_train_lora_moe \
+    --sdpa \
+    --task i2v-A14B \
     --training_stage stage_b \
     --output_dir "${OUTPUT_DIR}" \
     --logging_dir "${OUTPUT_DIR}/logs" \
@@ -166,8 +177,7 @@ python "${PROJECT_ROOT}/src/musubi_tuner/wan_train_lora_moe.py" \
     --clip "${CLIP_PATH}" \
     \
     --dataset_config "${DATASET_CONFIG}" \
-    --cache_latents \
-    --cache_text_encoder_outputs \
+    --log_config \
     --instrument_data_path "${CLIPS_WITH_INSTRUMENTS}" \
     \
     --base_lora_weights "${VANILLA_LORA_WEIGHTS}" \
@@ -183,6 +193,10 @@ python "${PROJECT_ROOT}/src/musubi_tuner/wan_train_lora_moe.py" \
     --rank_o ${RANK_O} \
     --rank_ffn ${RANK_FFN} \
     \
+    --network_module "networks.lora_wan" \
+    --network_dim ${LORA_DIM} \
+    --network_alpha ${LORA_ALPHA} \
+    \
     --routing_mode "${ROUTING_MODE}" \
     --router_hidden_dim ${ROUTER_HIDDEN_DIM} \
     --router_top_k ${ROUTER_TOP_K} \
@@ -191,10 +205,10 @@ python "${PROJECT_ROOT}/src/musubi_tuner/wan_train_lora_moe.py" \
     --use_teacher_guidance \
     --teacher_kl_weight 1.0 \
     \
-    --num_train_epochs ${NUM_EPOCHS} \
-    --batch_size ${BATCH_SIZE} \
+    --max_train_epochs ${NUM_EPOCHS} \
     --gradient_accumulation_steps ${GRAD_ACCUM_STEPS} \
     --learning_rate ${LEARNING_RATE} \
+    --optimizer_type AdamW \
     --lr_scheduler cosine \
     --lr_warmup_steps 100 \
     --mixed_precision "${MIXED_PRECISION}" \
@@ -210,9 +224,7 @@ python "${PROJECT_ROOT}/src/musubi_tuner/wan_train_lora_moe.py" \
     --offload_inactive_dit \
     --max_grad_norm 1.0 \
     \
-    --save_steps 500 \
-    --save_total_limit 3 \
-    --logging_steps 10 \
+    --save_every_n_steps 500 \
     --seed 42
 
 # ============================================================================

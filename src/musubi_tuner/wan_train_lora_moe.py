@@ -29,7 +29,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from accelerate import Accelerator
 
-from musubi_tuner.wan_train_network import WanNetworkTrainer, logger, setup_parser_common
+from musubi_tuner.wan_train_network import WanNetworkTrainer, logger, setup_parser_common, wan_setup_parser, read_config_from_file
 from musubi_tuner.networks.lora_wan_moe import create_wan_lora_moe, WanLoRAMoENetwork
 from musubi_tuner.losses.lora_moe_losses import LoRAMoECombinedLoss
 from musubi_tuner.dataset.image_video_dataset import ItemInfo
@@ -369,10 +369,10 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
 
 def setup_parser() -> argparse.ArgumentParser:
     """Setup argument parser for LoRA-MoE training."""
-    parser = argparse.ArgumentParser(description="Train WAN with LoRA-MoE")
-
-    # Base arguments from WanNetworkTrainer
-    setup_parser_common(parser)
+    # Base/common arguments
+    parser = setup_parser_common()
+    parser = wan_setup_parser(parser)
+    parser.description = "Train WAN with LoRA-MoE"
 
     # LoRA-MoE specific arguments
     parser.add_argument("--training_stage", type=str, default="stage_a",
@@ -454,17 +454,15 @@ def main():
     parser = setup_parser()
     args = parser.parse_args()
 
-    # Create trainer
+    # Load from config file if provided and set defaults similar to WAN trainer
+    args = read_config_from_file(args, parser)
+    args.dit_dtype = None  # automatically detected
+    if getattr(args, "vae_dtype", None) is None:
+        args.vae_dtype = "bfloat16"  # default for VAE
+
+    # Create and run trainer
     trainer = WanLoRAMoETrainer()
-
-    # Initialize
-    # (Following the pattern from wan_train_network.py)
-    # You would call trainer.train(args) here
-    # This requires integrating with the full training loop
-
-    logger.info("LoRA-MoE training script ready")
-    logger.info(f"Training stage: {args.training_stage}")
-    logger.info("To complete integration, connect this to your existing training loop")
+    trainer.train(args)
 
 
 if __name__ == "__main__":

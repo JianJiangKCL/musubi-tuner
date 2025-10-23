@@ -13,8 +13,11 @@ import json
 import sys
 import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+# Ensure project src is on sys.path
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+src_dir = os.path.join(repo_root, 'src')
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
 from musubi_tuner.utils.instrument_utils import (
     extract_instrument_label,
