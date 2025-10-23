@@ -1,0 +1,138 @@
+# LoRA-MoE Stage B Configuration: Expert LoRA Training
+# Instrument-specific adaptation with frozen base LoRA
+
+[general]
+task = "t2v-A14B"
+training_stage = "stage_b"
+output_dir = "./outputs/lora_moe_stage_b"
+logging_dir = "./logs/lora_moe_stage_b"
+
+[model]
+# WAN model paths (same as Stage A)
+dit = "./models/wan2.2/wan_t2v_A14B.safetensors"
+dit_high_noise = "./models/wan2.2/wan_t2v_A14B_high_noise.safetensors"
+vae = "./models/wan2.2/vae.safetensors"
+t5 = "./models/t5-v1_1-xxl"
+clip = "./models/clip-vit-large-patch14"
+
+# Pretrained weights from Stage A
+base_lora_weights = "./outputs/lora_moe_stage_a/lora_moe_final.safetensors"
+
+[lora_moe]
+# Same LoRA configuration as Stage A
+lora_dim = 4
+lora_alpha = 1.0
+num_experts = 4
+expert_names = ["Scissors", "Hook/Electrocautery", "Suction", "Other"]
+use_base_lora = true  # But frozen in Stage B
+
+# Dropouts
+lora_dropout = 0.0
+lora_rank_dropout = 0.05  # Slightly higher for experts
+lora_module_dropout = 0.0
+
+# Projection-specific ranks
+rank_q = 8
+rank_k = 4
+rank_v = 4
+rank_o = 4
+rank_ffn = 4
+
+# Target blocks
+target_blocks = "last_8"
+
+[router]
+# Rule-based routing (fixed during Stage B)
+routing_mode = "rule_based"
+router_top_k = 2
+router_temperature = 0.7
+router_ema_beta = 0.9
+
+[training]
+# Training hyperparameters
+batch_size = 1
+gradient_accumulation_steps = 8
+num_train_epochs = 15  # More epochs for expert specialization
+learning_rate = 5e-5   # Lower LR than Stage A
+lr_scheduler = "cosine"
+lr_warmup_steps = 50
+
+# Mixed precision
+mixed_precision = "bf16"
+
+# Gradient settings
+max_grad_norm = 1.0
+
+# Checkpointing
+save_steps = 500
+save_total_limit = 3
+
+# Logging
+logging_steps = 10
+
+# Early stopping (monitor ROI metrics)
+early_stopping_patience = 5
+early_stopping_metric = "roi_loss"
+
+[data]
+# Dataset configuration
+train_data_dir = "./data/surgical_videos"
+instrument_data_path = "./Lap/preprocessing/filtered_clips_processed.jsonl"
+
+# Important: Ensure balanced sampling across instruments
+# Each batch should ideally contain diverse instruments
+balanced_instrument_sampling = true
+
+# Video parameters
+frame_num = 81
+resolution = "720p"
+frame_sample_method = "uniform"
+
+# Preprocessing
+random_flip = false
+random_crop = false
+
+# Timestep sampling (focus on mid-late timesteps where shape crystallizes)
+timestep_range = [0.2, 1.0]  # Apply experts for t ∈ [0.2, 1.0]
+
+[loss]
+# Loss weights for Stage B
+weight_base_diffusion = 1.0
+weight_roi_recon = 3.0
+
+# NEW: Identity preservation and temporal consistency
+weight_identity = 0.5       # Enable identity loss
+weight_temporal = 0.5       # Enable temporal loss
+
+# Routing regularization
+weight_routing_entropy = 0.01
+weight_routing_load_balance = 0.05
+
+# Loss options
+use_roi_loss = true
+use_identity_loss = true   # Requires instrument classifier
+use_temporal_loss = true
+
+# ROI parameters
+roi_weight_multiplier = 5.0  # Higher emphasis on tips
+
+[optimizer]
+optimizer_type = "AdamW"
+adam_beta1 = 0.9
+adam_beta2 = 0.999
+adam_epsilon = 1e-8
+weight_decay = 0.01
+
+[misc]
+seed = 42
+num_workers = 4
+gradient_checkpointing = true
+offload_inactive_dit = true
+
+# Instrument classifier for identity loss
+# You need to train/provide this separately
+instrument_classifier_path = "./models/instrument_classifier.pth"  # Optional
+
+# ROI detector for mask generation
+# You can use a frozen keypoint/segmentation model
+roi_detector_path = "./models/roi_detector.pth"  # Optional
