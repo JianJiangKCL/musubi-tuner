@@ -1,0 +1,131 @@
+# LoRA-MoE Stage C Configuration: Learnable Router Training
+# Train MLP router with teacher guidance (optional advanced stage)
+
+[general]
+task = "t2v-A14B"
+training_stage = "stage_c"
+output_dir = "./outputs/lora_moe_stage_c"
+logging_dir = "./logs/lora_moe_stage_c"
+
+[model]
+# WAN model paths
+dit = "./models/wan2.2/wan_t2v_A14B.safetensors"
+dit_high_noise = "./models/wan2.2/wan_t2v_A14B_high_noise.safetensors"
+vae = "./models/wan2.2/vae.safetensors"
+t5 = "./models/t5-v1_1-xxl"
+clip = "./models/clip-vit-large-patch14"
+
+# Pretrained weights from Stage B (base + experts)
+lora_moe_weights = "./outputs/lora_moe_stage_b/lora_moe_final.safetensors"
+
+[lora_moe]
+# Same configuration as Stage B
+lora_dim = 4
+lora_alpha = 1.0
+num_experts = 4
+expert_names = ["Scissors", "Hook/Electrocautery", "Suction", "Other"]
+use_base_lora = true
+
+# All LoRAs frozen in Stage C
+lora_dropout = 0.0
+lora_rank_dropout = 0.0
+lora_module_dropout = 0.0
+
+# Projection-specific ranks
+rank_q = 8
+rank_k = 4
+rank_v = 4
+rank_o = 4
+rank_ffn = 4
+
+# Target blocks
+target_blocks = "last_8"
+
+[router]
+# LEARNED routing mode
+routing_mode = "learned"
+router_top_k = 2
+router_temperature = 0.7
+router_ema_beta = 0.9
+
+# MLP router architecture
+router_hidden_dim = 64
+router_input_dim = 512  # Depends on classifier output + text embeddings
+
+# Text conditioning (optional)
+use_text_conditioning = true
+
+[training]
+# Training hyperparameters
+batch_size = 2  # Can be higher since LoRAs are frozen
+gradient_accumulation_steps = 4
+num_train_epochs = 5  # Shorter training for router
+learning_rate = 1e-3  # Higher LR for router MLP
+lr_scheduler = "cosine"
+lr_warmup_steps = 20
+
+# Mixed precision
+mixed_precision = "bf16"
+
+# Gradient settings
+max_grad_norm = 1.0
+
+# Checkpointing
+save_steps = 200
+save_total_limit = 3
+
+# Logging
+logging_steps = 10
+
+[data]
+# Dataset configuration
+train_data_dir = "./data/surgical_videos"
+instrument_data_path = "./Lap/preprocessing/filtered_clips_processed.jsonl"
+
+# Balanced sampling
+balanced_instrument_sampling = true
+
+# Video parameters
+frame_num = 81
+resolution = "720p"
+frame_sample_method = "uniform"
+
+# Preprocessing
+random_flip = false
+random_crop = false
+
+[loss]
+# Loss weights for Stage C
+weight_base_diffusion = 1.0  # Keep diffusion loss for stability
+weight_roi_recon = 1.0
+weight_identity = 0.0  # Focus on routing
+weight_temporal = 0.0
+
+# Routing regularization (higher weight)
+weight_routing_entropy = 0.05
+weight_routing_load_balance = 0.1
+
+# Teacher guidance
+teacher_kl_weight = 1.0  # KL divergence to rule-based teacher
+
+# Loss options
+use_roi_loss = false
+use_identity_loss = false
+use_temporal_loss = false
+
+[optimizer]
+# Only optimize router parameters
+optimizer_type = "AdamW"
+adam_beta1 = 0.9
+adam_beta2 = 0.999
+adam_epsilon = 1e-8
+weight_decay = 0.01
+
+[misc]
+seed = 42
+num_workers = 4
+gradient_checkpointing = true
+offload_inactive_dit = true
+
+# Teacher router (rule-based) for KL guidance
+use_teacher_guidance = true

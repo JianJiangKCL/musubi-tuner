@@ -1,0 +1,425 @@
+"""
+Training script for LoRA-MoE adaptation of WAN2.2.
+
+Supports multi-stage training:
+- Stage A: Base LoRA general adaptation
+- Stage B: Expert LoRAs with instrument-specific routing
+- Stage C: Learnable router (optional)
+
+Usage:
+    # Stage A: Base LoRA
+    python wan_train_lora_moe.py --task t2v-A14B --training_stage stage_a --config configs/lora_moe_stage_a.toml
+
+    # Stage B: Expert LoRAs
+    python wan_train_lora_moe.py --task t2v-A14B --training_stage stage_b --config configs/lora_moe_stage_b.toml \\
+        --base_lora_weights outputs/stage_a/lora_moe.safetensors
+
+    # Stage C: Router training
+    python wan_train_lora_moe.py --task t2v-A14B --training_stage stage_c --config configs/lora_moe_stage_c.toml \\
+        --lora_moe_weights outputs/stage_b/lora_moe.safetensors
+"""
+
+import argparse
+import os
+import json
+from pathlib import Path
+from typing import Optional, Dict, List
+import torch
+import torch.nn as nn
+from tqdm import tqdm
+from accelerate import Accelerator
+
+from musubi_tuner.wan_train_network import WanNetworkTrainer, logger, setup_parser_common
+from musubi_tuner.networks.lora_wan_moe import create_wan_lora_moe, WanLoRAMoENetwork
+from musubi_tuner.losses.lora_moe_losses import LoRAMoECombinedLoss
+from musubi_tuner.dataset.image_video_dataset import ItemInfo
+
+
+class WanLoRAMoETrainer(WanNetworkTrainer):
+    """
+    Extended WAN trainer with LoRA-MoE support.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.lora_moe_network: Optional[WanLoRAMoENetwork] = None
+        self.lora_moe_loss: Optional[LoRAMoECombinedLoss] = None
+        self.training_stage = "stage_a"
+
+        # Instrument detector/classifier (optional, set externally)
+        self.instrument_classifier = None
+
+        # ROI detector (optional, set externally)
+        self.roi_detector = None
+
+    def handle_model_specific_args(self, args):
+        """Handle LoRA-MoE specific arguments."""
+        super().handle_model_specific_args(args)
+
+        # Training stage
+        self.training_stage = getattr(args, "training_stage", "stage_a")
+        logger.info(f"LoRA-MoE Training Stage: {self.training_stage}")
+
+        # LoRA-MoE config
+        self.lora_moe_config = {
+            "lora_dim": getattr(args, "lora_dim", 4),
+            "alpha": getattr(args, "lora_alpha", 1.0),
+            "num_experts": getattr(args, "num_experts", 4),
+            "expert_names": getattr(args, "expert_names", None),
+            "use_base_lora": getattr(args, "use_base_lora", True),
+            "dropout": getattr(args, "lora_dropout", 0.0),
+            "rank_dropout": getattr(args, "lora_rank_dropout", 0.0),
+            "module_dropout": getattr(args, "lora_module_dropout", 0.0),
+        }
+
+        # Router config
+        self.router_config = {
+            "routing_mode": getattr(args, "routing_mode", "rule_based"),
+            "top_k": getattr(args, "router_top_k", 2),
+            "temperature": getattr(args, "router_temperature", 0.7),
+            "ema_beta": getattr(args, "router_ema_beta", 0.9),
+        }
+
+        # Target blocks
+        target_blocks_str = getattr(args, "target_blocks", "last_8")
+        if target_blocks_str.startswith("["):
+            # Parse as list
+            import ast
+            self.target_blocks = ast.literal_eval(target_blocks_str)
+        else:
+            self.target_blocks = target_blocks_str
+
+        # Projection ranks
+        self.projection_ranks = {
+            "q": getattr(args, "rank_q", 8),
+            "k": getattr(args, "rank_k", 4),
+            "v": getattr(args, "rank_v", 4),
+            "o": getattr(args, "rank_o", 4),
+            "ffn": getattr(args, "rank_ffn", 4),
+        }
+
+        # Loss weights
+        self.loss_weights = {
+            "base_diffusion": getattr(args, "weight_base_diffusion", 1.0),
+            "roi_recon": getattr(args, "weight_roi_recon", 3.0),
+            "identity": getattr(args, "weight_identity", 0.5),
+            "temporal": getattr(args, "weight_temporal", 0.5),
+            "routing_entropy": getattr(args, "weight_routing_entropy", 0.01),
+            "routing_load_balance": getattr(args, "weight_routing_load_balance", 0.05),
+        }
+
+        # Instrument data config
+        self.instrument_data_path = getattr(args, "instrument_data_path", None)
+        self.use_roi_loss = getattr(args, "use_roi_loss", True)
+        self.use_identity_loss = getattr(args, "use_identity_loss", False)  # Requires classifier
+        self.use_temporal_loss = getattr(args, "use_temporal_loss", False)  # Requires flow model
+
+        # Pretrained weights
+        self.base_lora_weights = getattr(args, "base_lora_weights", None)
+        self.lora_moe_weights = getattr(args, "lora_moe_weights", None)
+
+    def setup_lora_moe(self, model: nn.Module):
+        """
+        Setup LoRA-MoE network on the model.
+        """
+        logger.info("Setting up LoRA-MoE network...")
+
+        # Create LoRA-MoE network
+        self.lora_moe_network = create_wan_lora_moe(
+            model=model,
+            lora_config=self.lora_moe_config,
+            router_config=self.router_config,
+            target_blocks=self.target_blocks,
+        )
+
+        # Load pretrained weights if provided
+        if self.lora_moe_weights is not None:
+            logger.info(f"Loading LoRA-MoE weights from {self.lora_moe_weights}")
+            self.lora_moe_network.load_lora_moe_weights(self.lora_moe_weights)
+        elif self.base_lora_weights is not None and self.training_stage == "stage_b":
+            # Load base LoRA from stage A
+            logger.info(f"Loading base LoRA weights from {self.base_lora_weights}")
+            # Note: This assumes stage A saved compatible weights
+            # You may need to implement a separate loading function
+            self.lora_moe_network.load_lora_moe_weights(self.base_lora_weights)
+
+        # Prepare for training stage
+        self.lora_moe_network.prepare_for_training_stage(self.training_stage)
+
+        logger.info(f"LoRA-MoE network ready for {self.training_stage}")
+
+    def setup_loss_function(self):
+        """
+        Setup LoRA-MoE combined loss function.
+        """
+        logger.info("Setting up LoRA-MoE loss function...")
+
+        # Create loss modules
+        from musubi_tuner.losses.lora_moe_losses import (
+            ROIWeightedLoss,
+            InstrumentIdentityLoss,
+            TemporalConsistencyLoss,
+            RoutingRegularizationLoss,
+        )
+
+        roi_loss = ROIWeightedLoss(
+            roi_weight=self.loss_weights["roi_recon"]
+        ) if self.use_roi_loss else None
+
+        identity_loss = InstrumentIdentityLoss(
+            classifier=self.instrument_classifier,
+            roi_weight=1.0,
+            background_weight=0.25,
+        ) if self.use_identity_loss else None
+
+        temporal_loss = TemporalConsistencyLoss(
+            flow_estimator=None,  # Optional: add flow estimator
+            consistency_metric="l1",
+            roi_only=True,
+        ) if self.use_temporal_loss else None
+
+        routing_loss = RoutingRegularizationLoss(
+            entropy_weight=self.loss_weights["routing_entropy"],
+            load_balance_weight=self.loss_weights["routing_load_balance"],
+            num_experts=self.lora_moe_config["num_experts"],
+        )
+
+        # Combined loss
+        self.lora_moe_loss = LoRAMoECombinedLoss(
+            base_diffusion_weight=self.loss_weights["base_diffusion"],
+            roi_recon_weight=self.loss_weights["roi_recon"],
+            identity_weight=self.loss_weights["identity"],
+            temporal_weight=self.loss_weights["temporal"],
+            roi_loss=roi_loss,
+            identity_loss=identity_loss,
+            temporal_loss=temporal_loss,
+            routing_loss=routing_loss,
+        )
+
+        logger.info("LoRA-MoE loss function ready")
+
+    def get_instrument_logits_from_batch(self, batch: Dict) -> Optional[torch.Tensor]:
+        """
+        Extract or predict instrument logits for routing.
+
+        Args:
+            batch: Training batch dict
+
+        Returns:
+            instrument_logits: [B, num_instruments] or None
+        """
+        # Option 1: Pre-computed logits from dataset
+        if "instrument_logits" in batch:
+            return batch["instrument_logits"]
+
+        # Option 2: Pre-computed labels (convert to one-hot)
+        if "instrument_labels" in batch:
+            labels = batch["instrument_labels"]  # [B]
+            B = labels.shape[0]
+            logits = torch.zeros(B, self.lora_moe_config["num_experts"], device=labels.device)
+            logits.scatter_(1, labels.unsqueeze(1), 1.0)
+            return logits
+
+        # Option 3: Run classifier on latents/frames (requires instrument_classifier)
+        if self.instrument_classifier is not None:
+            # Extract middle frame or random frame
+            latents = batch.get("latents", None)
+            if latents is not None:
+                # For simplicity, use middle frame
+                # In practice, you'd decode latents to pixels and run classifier
+                # This is a placeholder
+                logger.warning("Instrument classification from latents not implemented, using uniform distribution")
+
+        # Fallback: uniform distribution
+        B = batch["latents"].shape[0] if "latents" in batch else 1
+        num_experts = self.lora_moe_config["num_experts"]
+        return torch.ones(B, num_experts, device=batch["latents"].device) / num_experts
+
+    def get_roi_mask_from_batch(self, batch: Dict) -> Optional[torch.Tensor]:
+        """
+        Extract or predict ROI mask for loss weighting.
+
+        Args:
+            batch: Training batch dict
+
+        Returns:
+            roi_mask: [B, 1, F, H, W] or None
+        """
+        # Option 1: Pre-computed ROI masks from dataset
+        if "roi_mask" in batch:
+            return batch["roi_mask"]
+
+        # Option 2: Run ROI detector (requires roi_detector)
+        if self.roi_detector is not None:
+            # Placeholder
+            logger.warning("ROI detection not implemented, using None")
+
+        # Fallback: no ROI mask
+        return None
+
+    def train_batch(
+        self,
+        batch: Dict,
+        accelerator: Accelerator,
+        global_step: int,
+    ) -> Dict[str, float]:
+        """
+        Train on a single batch with LoRA-MoE.
+
+        Args:
+            batch: Training batch
+            accelerator: Accelerator instance
+            global_step: Global training step
+
+        Returns:
+            loss_dict: Dictionary of loss components
+        """
+        # Get instrument logits for routing
+        instrument_logits = self.get_instrument_logits_from_batch(batch)
+
+        # Set routing gates
+        self.lora_moe_network.set_routing_gates(
+            instrument_logits=instrument_logits,
+            text_embeddings=None,  # Optional: add text conditioning
+        )
+
+        # Get ROI mask
+        roi_mask = self.get_roi_mask_from_batch(batch)
+
+        # Get timestep from batch
+        timestep = batch.get("timestep", 0.5)  # Normalized timestep
+        self.lora_moe_network.set_timestep(timestep)
+
+        # Forward pass through model
+        # This depends on your existing training loop structure
+        # Placeholder for model prediction
+        model_pred = batch.get("model_pred")  # You'll get this from your model forward
+        target = batch.get("target")          # Target noise
+
+        # Get routing gates for loss
+        routing_gates = self.lora_moe_network.router.ema_gates.unsqueeze(0)
+
+        # Compute loss
+        total_loss, loss_dict = self.lora_moe_loss(
+            model_pred=model_pred,
+            target=target,
+            generated_frames=None,  # Optional: decode latents for identity/temporal loss
+            roi_mask=roi_mask,
+            instrument_labels=batch.get("instrument_labels"),
+            routing_gates=routing_gates,
+            teacher_gates=None,  # For stage C
+            stage=self.training_stage,
+        )
+
+        return total_loss, loss_dict
+
+    def save_checkpoint(self, save_dir: str, global_step: int):
+        """Save LoRA-MoE checkpoint."""
+        save_path = os.path.join(save_dir, f"lora_moe_step_{global_step}.safetensors")
+        self.lora_moe_network.save_lora_moe_weights(save_path)
+
+        # Save training state
+        state_path = os.path.join(save_dir, f"training_state_step_{global_step}.json")
+        state = {
+            "global_step": global_step,
+            "training_stage": self.training_stage,
+            "lora_moe_config": self.lora_moe_config,
+            "router_config": self.router_config,
+            "loss_weights": self.loss_weights,
+        }
+        with open(state_path, "w") as f:
+            json.dump(state, f, indent=2)
+
+        logger.info(f"Saved checkpoint to {save_path}")
+
+
+def setup_parser() -> argparse.ArgumentParser:
+    """Setup argument parser for LoRA-MoE training."""
+    parser = argparse.ArgumentParser(description="Train WAN with LoRA-MoE")
+
+    # Base arguments from WanNetworkTrainer
+    setup_parser_common(parser)
+
+    # LoRA-MoE specific arguments
+    parser.add_argument("--training_stage", type=str, default="stage_a",
+                      choices=["stage_a", "stage_b", "stage_c"],
+                      help="Training stage: stage_a (base LoRA), stage_b (experts), stage_c (router)")
+
+    # LoRA config
+    parser.add_argument("--lora_dim", type=int, default=4, help="Base LoRA rank")
+    parser.add_argument("--lora_alpha", type=float, default=1.0, help="LoRA alpha scaling")
+    parser.add_argument("--num_experts", type=int, default=4, help="Number of expert LoRAs")
+    parser.add_argument("--expert_names", type=str, nargs="+", default=None,
+                      help="Expert names (default: Scissors, Hook/Electrocautery, Suction, Other)")
+    parser.add_argument("--use_base_lora", action="store_true", default=True,
+                      help="Use base LoRA (shared adaptation)")
+    parser.add_argument("--lora_dropout", type=float, default=0.0, help="LoRA dropout")
+    parser.add_argument("--lora_rank_dropout", type=float, default=0.0, help="LoRA rank dropout")
+    parser.add_argument("--lora_module_dropout", type=float, default=0.0, help="LoRA module dropout")
+
+    # Projection-specific ranks
+    parser.add_argument("--rank_q", type=int, default=8, help="Rank for Q projection")
+    parser.add_argument("--rank_k", type=int, default=4, help="Rank for K projection")
+    parser.add_argument("--rank_v", type=int, default=4, help="Rank for V projection")
+    parser.add_argument("--rank_o", type=int, default=4, help="Rank for O projection")
+    parser.add_argument("--rank_ffn", type=int, default=4, help="Rank for FFN")
+
+    # Target blocks
+    parser.add_argument("--target_blocks", type=str, default="last_8",
+                      help="Which blocks to adapt: 'last_8', 'last_6', or list like '[32,33,34,35,36,37,38,39]'")
+
+    # Router config
+    parser.add_argument("--routing_mode", type=str, default="rule_based",
+                      choices=["rule_based", "learned"],
+                      help="Routing mode")
+    parser.add_argument("--router_top_k", type=int, default=2, help="Top-k routing")
+    parser.add_argument("--router_temperature", type=float, default=0.7, help="Router temperature")
+    parser.add_argument("--router_ema_beta", type=float, default=0.9, help="Router EMA beta")
+
+    # Loss weights
+    parser.add_argument("--weight_base_diffusion", type=float, default=1.0, help="Base diffusion loss weight")
+    parser.add_argument("--weight_roi_recon", type=float, default=3.0, help="ROI reconstruction weight")
+    parser.add_argument("--weight_identity", type=float, default=0.5, help="Identity preservation weight")
+    parser.add_argument("--weight_temporal", type=float, default=0.5, help="Temporal consistency weight")
+    parser.add_argument("--weight_routing_entropy", type=float, default=0.01, help="Routing entropy weight")
+    parser.add_argument("--weight_routing_load_balance", type=float, default=0.05, help="Routing load balance weight")
+
+    # Data config
+    parser.add_argument("--instrument_data_path", type=str, default=None,
+                      help="Path to instrument annotations/labels")
+    parser.add_argument("--use_roi_loss", action="store_true", default=True,
+                      help="Use ROI-weighted loss")
+    parser.add_argument("--use_identity_loss", action="store_true", default=False,
+                      help="Use identity preservation loss (requires classifier)")
+    parser.add_argument("--use_temporal_loss", action="store_true", default=False,
+                      help="Use temporal consistency loss (requires flow model)")
+
+    # Pretrained weights
+    parser.add_argument("--base_lora_weights", type=str, default=None,
+                      help="Path to base LoRA weights (for stage B)")
+    parser.add_argument("--lora_moe_weights", type=str, default=None,
+                      help="Path to LoRA-MoE weights (for resuming or stage C)")
+
+    return parser
+
+
+def main():
+    """Main training entry point."""
+    parser = setup_parser()
+    args = parser.parse_args()
+
+    # Create trainer
+    trainer = WanLoRAMoETrainer()
+
+    # Initialize
+    # (Following the pattern from wan_train_network.py)
+    # You would call trainer.train(args) here
+    # This requires integrating with the full training loop
+
+    logger.info("LoRA-MoE training script ready")
+    logger.info(f"Training stage: {args.training_stage}")
+    logger.info("To complete integration, connect this to your existing training loop")
+
+
+if __name__ == "__main__":
+    main()
