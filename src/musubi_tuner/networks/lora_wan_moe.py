@@ -236,6 +236,14 @@ class WanLoRAMoENetwork(LoRAMoENetwork):
             use_base_lora=self.use_base_lora,
         )
 
+        # Align device/dtype with original child module
+        try:
+            dev = child_module.weight.device
+            dt = child_module.weight.dtype
+            lora_moe.to(device=dev, dtype=dt)
+        except Exception:
+            pass
+
         # Replace
         setattr(parent, child_name, lora_moe)
         self.lora_moe_modules.append(lora_moe)
@@ -404,7 +412,16 @@ class WanLoRAMoENetwork(LoRAMoENetwork):
 
     def load_lora_moe_weights(self, load_path: str):
         """Load LoRA-MoE weights."""
-        state_dict = torch.load(load_path, map_location="cpu")
+        # Support safetensors and PyTorch 2.6+ weights_only behavior
+        if load_path.endswith(".safetensors"):
+            from safetensors.torch import load_file
+            state_dict = load_file(load_path)
+        else:
+            try:
+                state_dict = torch.load(load_path, map_location="cpu", weights_only=False)
+            except TypeError:
+                # Older PyTorch without weights_only
+                state_dict = torch.load(load_path, map_location="cpu")
 
         # Load LoRA-MoE modules
         for i, module in enumerate(self.lora_moe_modules):

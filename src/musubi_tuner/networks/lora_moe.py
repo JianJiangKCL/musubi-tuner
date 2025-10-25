@@ -103,7 +103,9 @@ class LoRAMoEModule(nn.Module):
             self.timestep_gate = nn.Linear(1, 3, bias=True)
             nn.init.zeros_(self.timestep_gate.weight)
             # Initialize bias to favor mid/late timesteps
-            nn.init.constant_(self.timestep_gate.bias, torch.tensor([0.0, 1.0, 2.0]))
+            with torch.no_grad():
+                bias = self.timestep_gate.bias
+                bias.copy_(torch.tensor([0.0, 1.0, 2.0], dtype=bias.dtype, device=bias.device))
         else:
             self.timestep_gate = None
 
@@ -529,6 +531,14 @@ class LoRAMoENetwork:
                             expert_names=self.expert_names,
                             use_base_lora=self.use_base_lora,
                         )
+
+                        # Move LoRA-MoE to the same device/dtype as the original Linear
+                        try:
+                            dev = child_module.weight.device
+                            dt = child_module.weight.dtype
+                            lora_moe.to(device=dev, dtype=dt)
+                        except Exception:
+                            pass
 
                         # Replace module
                         setattr(module, child_name, lora_moe)

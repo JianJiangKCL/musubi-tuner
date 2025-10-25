@@ -444,6 +444,9 @@ class NetworkTrainer:
     def get_optimizer(self, args, trainable_params: list[torch.nn.Parameter]) -> tuple[str, str, torch.optim.Optimizer]:
         # adamw, adamw8bit, adafactor
 
+        # Default optimizer if missing/blank
+        if getattr(args, "optimizer_type", None) is None or str(args.optimizer_type).strip() == "":
+            args.optimizer_type = "AdamW"
         optimizer_type = args.optimizer_type.lower()
 
         # split optimizer_type and optimizer_args
@@ -1727,7 +1730,10 @@ class NetworkTrainer:
         # load network model for differential training
         sys.path.append(os.path.dirname(__file__))
         accelerator.print("import network module:", args.network_module)
-        network_module: lora_module = importlib.import_module(args.network_module)  # actual module may be different
+        if args.network_module is None:
+            network_module = None
+        else:
+            network_module: lora_module = importlib.import_module(args.network_module)  # actual module may be different
 
         if args.base_weights is not None:
             # if base_weights is specified, merge the weights to DiT model
@@ -1754,7 +1760,33 @@ class NetworkTrainer:
                 key, value = net_arg.split("=")
                 net_kwargs[key] = value
 
-        if args.dim_from_weights:
+        if network_module is None:
+            class _NoNetwork(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                def prepare_network(self, args):
+                    pass
+                def apply_to(self, *args, **kwargs):
+                    pass
+                def enable_gradient_checkpointing(self):
+                    pass
+                def prepare_optimizer_params(self, *args, **kwargs):
+                    return [], []
+                def get_trainable_params(self):
+                    return []
+                def prepare_grad_etc(self, *args, **kwargs):
+                    pass
+                def on_epoch_start(self, *args, **kwargs):
+                    pass
+                def on_step_start(self, *args, **kwargs):
+                    pass
+                def apply_max_norm_regularization(self, *args, **kwargs):
+                    return 0, 0, 0
+                def save_weights(self, *args, **kwargs):
+                    pass
+
+            network = _NoNetwork()
+        elif args.dim_from_weights:
             logger.info(f"Loading network from weights: {args.dim_from_weights}")
             weights_sd = load_file(args.dim_from_weights)
             network, _ = network_module.create_arch_network_from_weights(1, weights_sd, unet=transformer)
@@ -1785,7 +1817,7 @@ class NetworkTrainer:
         if network is None:
             return
 
-        if hasattr(network_module, "prepare_network"):
+        if network_module is not None and hasattr(network_module, "prepare_network"):
             network.prepare_network(args)
 
         # apply network to DiT
@@ -1804,6 +1836,12 @@ class NetworkTrainer:
         accelerator.print("prepare optimizer, data loader etc.")
 
         trainable_params, lr_descriptions = network.prepare_optimizer_params(unet_lr=args.learning_rate)
+        # Optionally include LoRA-MoE trainable params if present
+        if hasattr(self, "lora_moe_network") and self.lora_moe_network is not None:
+            moe_params = self.lora_moe_network.get_trainable_params()
+            if len(moe_params) > 0:
+                trainable_params.append({"params": moe_params, "lr": args.learning_rate})
+                lr_descriptions.append("lora_moe")
         optimizer_name, optimizer_args, optimizer, optimizer_train_fn, optimizer_eval_fn = self.get_optimizer(
             args, trainable_params
         )
@@ -2148,6 +2186,25 @@ class NetworkTrainer:
                     # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
                     loss = loss.mean()  # mean loss over all elements in batch
+
+                    # Optional: extra loss from subclasses (e.g., LoRA-MoE router regularization)
+                    if hasattr(self, "compute_extra_loss") and callable(getattr(self, "compute_extra_loss")):
+                        try:
+                            extra_loss = self.compute_extra_loss(
+                                batch=batch,
+                                timesteps=timesteps,
+                                model_pred=model_pred,
+                                target=target,
+                                transformer=transformer,
+                                accelerator=accelerator,
+                                args=args,
+                            )
+                            # ensure dtype/device alignment
+                            if isinstance(extra_loss, torch.Tensor):
+                                extra_loss = extra_loss.to(device=loss.device, dtype=loss.dtype)
+                                loss = loss + extra_loss
+                        except Exception as e:
+                            logger.warning(f"compute_extra_loss failed: {e}")
 
                     accelerator.backward(loss)
                     if accelerator.sync_gradients:

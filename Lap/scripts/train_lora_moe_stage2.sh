@@ -12,7 +12,7 @@ set -e  # Exit on error
 # ============================================================================
 # Configuration
 # ============================================================================
-
+CUDA_VISIBLE_DEVICES=7
 # Paths (ADJUST THESE TO YOUR SETUP)
 PROJECT_ROOT="/mnt/cfs/jj/proj/musubi-tuner"
 DATA_ROOT="/mnt/cfs/jj/proj/musubi-tuner/Lap"
@@ -41,8 +41,8 @@ CLIPS_WITH_INSTRUMENTS="${PROJECT_ROOT}/Lap/preprocessing/filtered_clips_with_in
 VANILLA_LORA_WEIGHTS="/mnt/cfs/jj/proj/musubi-tuner/Lap/lora_outputs/all_videos_20s/high_noise_trace50/20s-of-lorac.safetensors"
 
 # Model checkpoints
-DIT_PATH="${CKPT_ROOT}/low_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors"
-DIT_HIGH_NOISE_PATH="${CKPT_ROOT}/high_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors"  # WAN2.2 split weights
+DIT_PATH="${PROJECT_ROOT}/outputs/merged_low_noise.safetensors"
+DIT_HIGH_NOISE_PATH="${PROJECT_ROOT}/outputs/merged_high_noise.safetensors"  # merged WAN2.2 split weights
 VAE_PATH="${CKPT_ROOT}/Wan2.1_VAE.pth"
 T5_PATH="${CKPT_ROOT}/models_t5_umt5-xxl-enc-bf16.pth"
 CLIP_PATH="${CKPT_ROOT}/clip-vit-large-patch14"  # Or appropriate CLIP path
@@ -180,7 +180,7 @@ python -m musubi_tuner.wan_train_lora_moe \
     --log_config \
     --instrument_data_path "${CLIPS_WITH_INSTRUMENTS}" \
     \
-    --base_lora_weights "${VANILLA_LORA_WEIGHTS}" \
+    # --base_lora_weights "${VANILLA_LORA_WEIGHTS}" \
     \
     --lora_dim ${LORA_DIM} \
     --lora_alpha ${LORA_ALPHA} \
@@ -193,9 +193,9 @@ python -m musubi_tuner.wan_train_lora_moe \
     --rank_o ${RANK_O} \
     --rank_ffn ${RANK_FFN} \
     \
-    --network_module "networks.lora_wan" \
-    --network_dim ${LORA_DIM} \
-    --network_alpha ${LORA_ALPHA} \
+    # --network_module "networks.lora_wan" \
+    # --network_dim ${LORA_DIM} \
+    # --network_alpha ${LORA_ALPHA} \
     \
     --routing_mode "${ROUTING_MODE}" \
     --router_hidden_dim ${ROUTER_HIDDEN_DIM} \
@@ -211,7 +211,7 @@ python -m musubi_tuner.wan_train_lora_moe \
     --optimizer_type AdamW \
     --lr_scheduler cosine \
     --lr_warmup_steps 100 \
-    --mixed_precision "${MIXED_PRECISION}" \
+    --mixed_precision bf16 \
     \
     --weight_base_diffusion ${WEIGHT_DIFFUSION} \
     --weight_roi_recon ${WEIGHT_ROI} \

@@ -1,23 +1,3 @@
-"""
-Training script for LoRA-MoE adaptation of WAN2.2.
-
-Supports multi-stage training:
-- Stage A: Base LoRA general adaptation
-- Stage B: Expert LoRAs with instrument-specific routing
-- Stage C: Learnable router (optional)
-
-Usage:
-    # Stage A: Base LoRA
-    python wan_train_lora_moe.py --task t2v-A14B --training_stage stage_a --config configs/lora_moe_stage_a.toml
-
-    # Stage B: Expert LoRAs
-    python wan_train_lora_moe.py --task t2v-A14B --training_stage stage_b --config configs/lora_moe_stage_b.toml \\
-        --base_lora_weights outputs/stage_a/lora_moe.safetensors
-
-    # Stage C: Router training
-    python wan_train_lora_moe.py --task t2v-A14B --training_stage stage_c --config configs/lora_moe_stage_c.toml \\
-        --lora_moe_weights outputs/stage_b/lora_moe.safetensors
-"""
 
 import argparse
 import os
@@ -82,6 +62,10 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
             "input_dim": getattr(args, "router_input_dim", 512),
             "use_text_conditioning": getattr(args, "use_text_conditioning", False),
         }
+
+        # If we only use instrument logits (num_experts) as input, align router input dim to num_experts to avoid matmul shape mismatch
+        if not self.router_config["use_text_conditioning"]:
+            self.router_config["input_dim"] = self.lora_moe_config["num_experts"]
 
         # Router training flag (for stage_b)
         self.train_router_in_stage_b = getattr(args, "train_router", True)  # Default: train router in stage_b
@@ -196,6 +180,7 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
         routing_loss = RoutingRegularizationLoss(
             entropy_weight=self.loss_weights["routing_entropy"],
             load_balance_weight=self.loss_weights["routing_load_balance"],
+            teacher_kl_weight=self.teacher_kl_weight,
             num_experts=self.lora_moe_config["num_experts"],
         )
 
@@ -347,6 +332,173 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
 
         return total_loss, loss_dict
 
+    # Override: load transformer then setup LoRA-MoE and loss
+    def load_transformer(
+        self,
+        accelerator: Accelerator,
+        args: argparse.Namespace,
+        dit_path: str,
+        attn_mode: str,
+        split_attn: bool,
+        loading_device: str,
+        dit_weight_dtype: Optional[torch.dtype],
+    ):
+        model = super().load_transformer(
+            accelerator,
+            args,
+            dit_path,
+            attn_mode,
+            split_attn,
+            loading_device,
+            dit_weight_dtype,
+        )
+
+        # Ensure LoRA-MoE is applied and loss is ready
+        if self.lora_moe_network is None:
+            self.setup_lora_moe(model)
+        if self.lora_moe_loss is None:
+            self.setup_loss_function()
+
+        # Avoid double-counting base diffusion: parent loop already computes weighted MSE
+        try:
+            self.lora_moe_loss.base_diffusion_weight = 0.0
+        except Exception:
+            pass
+
+        # Ensure router is on the same device as accelerator
+        try:
+            if self.lora_moe_network is not None and hasattr(self.lora_moe_network, "router"):
+                self.lora_moe_network.router.to(accelerator.device)
+        except Exception:
+            pass
+
+        # If WAN high/low training is enabled, convert the inactive (high-noise) state dict
+        # into the MoE-wrapped keyspace so that weight swapping works without key mismatches.
+        try:
+            if getattr(self, "high_low_training", False) and getattr(self, "dit_inactive_state_dict", None) is not None:
+                # Build a MoE-compatible state dict: start from the current MoE model state,
+                # then overwrite base DiT weights using the inactive (plain) high-noise state dict,
+                # mapping projection keys into org_module.* for wrapped modules.
+                moe_sd = model.state_dict()
+                plain_sd = self.dit_inactive_state_dict
+
+                def map_plain_key_to_moe_key(k: str) -> str:
+                    # Map projection weights/biases for self_attn/cross_attn and ffn.0 to org_module.*
+                    # Example: blocks.32.self_attn.q.weight -> blocks.32.self_attn.q.org_module.weight
+                    #          blocks.37.ffn.0.weight      -> blocks.37.ffn.0.org_module.weight
+                    parts = k.split(".")
+                    # attn projections
+                    if len(parts) >= 5 and parts[0] == "blocks" and parts[2] in ("self_attn", "cross_attn") and parts[3] in ("q", "k", "v", "o") and parts[4] in ("weight", "bias"):
+                        return ".".join(parts[:4] + ["org_module", parts[4]])
+                    # ffn first linear layer is indexed as ffn.0
+                    if len(parts) >= 5 and parts[0] == "blocks" and parts[2] == "ffn" and parts[3] == "0" and parts[4] in ("weight", "bias"):
+                        return ".".join(parts[:4] + ["org_module", parts[4]])
+                    return k
+
+                # Start from current MoE state (keeps LoRA-MoE params). Overwrite base weights from plain_sd.
+                moe_compatible_sd = {}
+                for mk, mv in moe_sd.items():
+                    moe_compatible_sd[mk] = mv
+
+                for pk, pv in plain_sd.items():
+                    mk = map_plain_key_to_moe_key(pk)
+                    if mk in moe_compatible_sd:
+                        try:
+                            moe_compatible_sd[mk] = pv.to(moe_compatible_sd[mk].dtype)
+                        except Exception:
+                            # Fallback without dtype cast
+                            moe_compatible_sd[mk] = pv
+
+                # Replace inactive state dict with the MoE-compatible version
+                self.dit_inactive_state_dict = moe_compatible_sd
+        except Exception as e:
+            logger.warning(f"Failed to convert inactive state dict for high/low swap to MoE format: {e}")
+
+        return model
+
+    # Hook: compute extra MoE losses (routing entropy, load balance, teacher KL, etc.)
+    def compute_extra_loss(
+        self,
+        batch: Dict,
+        timesteps: torch.Tensor,
+        model_pred: torch.Tensor,
+        target: torch.Tensor,
+        transformer: nn.Module,
+        accelerator: Accelerator,
+        args: argparse.Namespace,
+    ) -> torch.Tensor:
+        if self.lora_moe_network is None or self.lora_moe_loss is None:
+            return torch.tensor(0.0, device=accelerator.device, dtype=model_pred.dtype)
+
+        # Prepare routing inputs
+        instrument_logits = self.get_instrument_logits_from_batch(batch)
+        if isinstance(instrument_logits, torch.Tensor):
+            instrument_logits = instrument_logits.to(device=accelerator.device)
+
+        # Teacher gates (rule-based) for learned router guidance
+        teacher_gates = None
+        if self.training_stage in ["stage_b", "stage_c"] and self.use_teacher_guidance and self.train_router_in_stage_b:
+            from musubi_tuner.networks.lora_moe import InstrumentRouter
+            teacher_router = InstrumentRouter(
+                num_experts=self.lora_moe_config["num_experts"],
+                routing_mode="rule_based",
+                top_k=self.router_config["top_k"],
+                temperature=self.router_config["temperature"],
+            ).to(accelerator.device)
+            with torch.no_grad():
+                teacher_gates = teacher_router(
+                    instrument_logits=instrument_logits,
+                    apply_topk=True,
+                    apply_ema=False,
+                )
+
+        # Set current routing for modules
+        self.lora_moe_network.set_routing_gates(
+            instrument_logits=instrument_logits,
+            text_embeddings=None,
+        )
+
+        # Set normalized timestep (use batch mean)
+        if isinstance(timesteps, torch.Tensor):
+            t_norm = (timesteps.float().mean() / 1000.0).clamp(0.0, 1.0).item()
+        else:
+            t_norm = 0.5
+        self.lora_moe_network.set_timestep(t_norm)
+
+        # ROI mask if available
+        roi_mask = self.get_roi_mask_from_batch(batch)
+        if isinstance(roi_mask, torch.Tensor):
+            roi_mask = roi_mask.to(device=accelerator.device)
+
+        # Gates for loss (use current router outputs)
+        # Ensure router is on device
+        try:
+            self.lora_moe_network.router.to(accelerator.device)
+        except Exception:
+            pass
+
+        # Use differentiable gates (no top-k) for loss to allow gradients to flow into router MLP
+        gates_for_loss = self.lora_moe_network.router(
+            instrument_logits=instrument_logits,
+            text_embeddings=None,
+            apply_topk=False,
+            apply_ema=False,
+        )
+
+        # Compute extra loss components (routing, roi/identity/temporal if enabled)
+        extra_total, _ = self.lora_moe_loss(
+            model_pred=model_pred,
+            target=target,
+            generated_frames=None,
+            roi_mask=roi_mask,
+            instrument_labels=batch.get("instrument_labels"),
+            routing_gates=gates_for_loss,
+            teacher_gates=teacher_gates,
+            stage=self.training_stage,
+        )
+
+        return extra_total
+
     def save_checkpoint(self, save_dir: str, global_step: int):
         """Save LoRA-MoE checkpoint."""
         save_path = os.path.join(save_dir, f"lora_moe_step_{global_step}.safetensors")
@@ -457,6 +609,8 @@ def main():
     # Load from config file if provided and set defaults similar to WAN trainer
     args = read_config_from_file(args, parser)
     args.dit_dtype = None  # automatically detected
+    if getattr(args, "mixed_precision", None) is None:
+        args.mixed_precision = "bf16"  # default to bf16 for WAN2.2 bf16 weights
     if getattr(args, "vae_dtype", None) is None:
         args.vae_dtype = "bfloat16"  # default for VAE
 
