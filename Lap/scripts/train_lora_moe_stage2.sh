@@ -180,7 +180,7 @@ exec python -m musubi_tuner.wan_train_lora_moe \
     --log_config \
     --instrument_data_path "${CLIPS_WITH_INSTRUMENTS}" \
     \
-    # --base_lora_weights "${VANILLA_LORA_WEIGHTS}" \
+    --no_use_base_lora \
     \
     --lora_dim ${LORA_DIM} \
     --lora_alpha ${LORA_ALPHA} \

@@ -556,8 +556,10 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_experts", type=int, default=4, help="Number of expert LoRAs")
     parser.add_argument("--expert_names", type=str, nargs="+", default=None,
                       help="Expert names (default: Scissors, Hook/Electrocautery, Suction, Other)")
-    parser.add_argument("--use_base_lora", action="store_true", default=True,
-                      help="Use base LoRA (shared adaptation)")
+    parser.add_argument("--use_base_lora", dest="use_base_lora", action="store_true", default=False,
+                      help="Use base LoRA (shared adaptation). Set this for old-style 2-stage training.")
+    parser.add_argument("--no_use_base_lora", dest="use_base_lora", action="store_false",
+                      help="Do NOT use base LoRA. Use this when vanilla LoRA is already merged into DiT.")
     parser.add_argument("--lora_dropout", type=float, default=0.0, help="LoRA dropout")
     parser.add_argument("--lora_rank_dropout", type=float, default=0.0, help="LoRA rank dropout")
     parser.add_argument("--lora_module_dropout", type=float, default=0.0, help="LoRA module dropout")
