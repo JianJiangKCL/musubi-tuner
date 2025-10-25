@@ -486,7 +486,7 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
         )
 
         # Compute extra loss components (routing, roi/identity/temporal if enabled)
-        extra_total, _ = self.lora_moe_loss(
+        extra_total, loss_dict = self.lora_moe_loss(
             model_pred=model_pred,
             target=target,
             generated_frames=None,
@@ -496,8 +496,27 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
             teacher_gates=teacher_gates,
             stage=self.training_stage,
         )
+        # Cache breakdown logs for external logging
+        try:
+            logs = {"loss/moe_total": float(extra_total.detach().item())}
+            if isinstance(loss_dict, dict):
+                for k, v in loss_dict.items():
+                    if isinstance(v, torch.Tensor):
+                        logs[f"loss/moe/{k}"] = float(v.detach().item())
+                    else:
+                        # assume numeric
+                        logs[f"loss/moe/{k}"] = float(v)
+            self._last_moe_loss_logs = logs
+        except Exception:
+            self._last_moe_loss_logs = {"loss/moe_total": float(extra_total.detach().item())}
 
         return extra_total
+
+    def get_extra_loss_logs(self) -> Dict[str, float]:
+        try:
+            return getattr(self, "_last_moe_loss_logs", {})
+        except Exception:
+            return {}
 
     def save_checkpoint(self, save_dir: str, global_step: int):
         """Save LoRA-MoE checkpoint."""
@@ -608,6 +627,9 @@ def main():
 
     # Load from config file if provided and set defaults similar to WAN trainer
     args = read_config_from_file(args, parser)
+    # Prefer wandb by default unless explicitly set
+    if getattr(args, "log_with", None) is None:
+        args.log_with = "wandb"
     args.dit_dtype = None  # automatically detected
     if getattr(args, "mixed_precision", None) is None:
         args.mixed_precision = "bf16"  # default to bf16 for WAN2.2 bf16 weights

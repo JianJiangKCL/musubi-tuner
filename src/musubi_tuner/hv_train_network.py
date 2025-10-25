@@ -4,6 +4,7 @@ from datetime import timedelta
 import gc
 import importlib
 import argparse
+import signal
 import math
 import os
 import pathlib
@@ -2152,6 +2153,24 @@ class NetworkTrainer:
 
             accelerator.unwrap_model(network).on_epoch_start(transformer)
 
+            # graceful shutdown flag
+            stop_requested = getattr(self, "_stop_requested", False)
+
+            def _sigint_handler(signum, frame):
+                # set a flag and let the current step finish
+                setattr(self, "_stop_requested", True)
+                accelerator.print("SIGINT received, will stop after this step...")
+
+            # install handler once per epoch
+            try:
+                old_sigint = signal.getsignal(signal.SIGINT)
+                old_sigterm = signal.getsignal(signal.SIGTERM)
+                signal.signal(signal.SIGINT, _sigint_handler)
+                signal.signal(signal.SIGTERM, _sigint_handler)
+            except Exception:
+                old_sigint = None
+                old_sigterm = None
+
             for step, batch in enumerate(train_dataloader):
                 latents = batch["latents"]
                 bsz = latents.shape[0]
@@ -2186,6 +2205,7 @@ class NetworkTrainer:
                     # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
                     loss = loss.mean()  # mean loss over all elements in batch
+                    base_loss_value = float(loss.detach().item())
 
                     # Optional: extra loss from subclasses (e.g., LoRA-MoE router regularization)
                     if hasattr(self, "compute_extra_loss") and callable(getattr(self, "compute_extra_loss")):
@@ -2205,6 +2225,12 @@ class NetworkTrainer:
                                 loss = loss + extra_loss
                         except Exception as e:
                             logger.warning(f"compute_extra_loss failed: {e}")
+
+                    # Log per-step loss breakdown before backward
+                    if hasattr(self, "get_extra_loss_logs") and callable(getattr(self, "get_extra_loss_logs")):
+                        moe_logs = self.get_extra_loss_logs()
+                    else:
+                        moe_logs = {}
 
                     accelerator.backward(loss)
                     if accelerator.sync_gradients:
@@ -2263,7 +2289,10 @@ class NetworkTrainer:
                 current_loss = loss.detach().item()
                 loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
-                logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
+                logs = {"loss/avg": avr_loss, "loss/base": base_loss_value}
+                # attach last extra loss breakdown if available
+                if 'moe_logs' in locals() and isinstance(moe_logs, dict):
+                    logs.update(moe_logs)
                 progress_bar.set_postfix(**logs)
 
                 if args.scale_weight_norms:
@@ -2273,14 +2302,28 @@ class NetworkTrainer:
                     logs = self.generate_step_logs(
                         args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm
                     )
+                    # merge moe logs
+                    if 'moe_logs' in locals() and isinstance(moe_logs, dict):
+                        logs.update(moe_logs)
                     accelerator.log(logs, step=global_step)
 
+                if getattr(self, "_stop_requested", False):
+                    break
                 if global_step >= args.max_train_steps:
                     break
 
             if len(accelerator.trackers) > 0:
                 logs = {"loss/epoch": loss_recorder.moving_average}
                 accelerator.log(logs, step=epoch + 1)
+
+            # restore previous handlers
+            try:
+                if old_sigint is not None:
+                    signal.signal(signal.SIGINT, old_sigint)
+                if old_sigterm is not None:
+                    signal.signal(signal.SIGTERM, old_sigterm)
+            except Exception:
+                pass
 
             accelerator.wait_for_everyone()
 

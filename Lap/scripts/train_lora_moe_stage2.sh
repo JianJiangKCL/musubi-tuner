@@ -163,7 +163,7 @@ echo "=== Starting LoRA-MoE Training ==="
 echo "Output directory: ${OUTPUT_DIR}"
 echo ""
 
-python -m musubi_tuner.wan_train_lora_moe \
+exec python -m musubi_tuner.wan_train_lora_moe \
     --sdpa \
     --task i2v-A14B \
     --training_stage stage_b \
