@@ -12,12 +12,17 @@ set -e  # Exit on error
 # ============================================================================
 # Configuration
 # ============================================================================
-CUDA_VISIBLE_DEVICES=7
+# GPU configuration
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 # Adjust to your available GPUs
+NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | tr ',' '\n' | wc -l)
 # Paths (ADJUST THESE TO YOUR SETUP)
 PROJECT_ROOT="/mnt/cfs/jj/proj/musubi-tuner"
 DATA_ROOT="/mnt/cfs/jj/proj/musubi-tuner/Lap"
 CACHE_ROOT="/mnt/cfs/jj/proj/musubi-tuner/Lap/cache/trace50_allvideos_20s"
 CKPT_ROOT="/mnt/cfs/jj/ckpt/Wan2.2-I2V-A14B"
+
+# Accelerate multi-GPU config
+ACCELERATE_CONFIG="/mnt/cfs/jj/proj/musubi-tuner/eight_gpu_config.yaml"
 
 # Ensure src-layout package is importable
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH}"
@@ -27,7 +32,13 @@ source /data1/miniconda3/etc/profile.d/conda.sh
 conda activate musu
 
 # Output directory
-OUTPUT_DIR="${PROJECT_ROOT}/outputs/lora_moe_stage2"
+# Experiment tag (version). Priority: $1 > $EXP_TAG env > timestamp
+EXP_TAG="${1:-${EXP_TAG}}"
+if [ -z "${EXP_TAG}" ]; then
+    EXP_TAG=$(date +%Y%m%d_%H%M%S)
+fi
+
+OUTPUT_DIR="${PROJECT_ROOT}/outputs/lora_moe_stage2/${EXP_TAG}"
 mkdir -p "${OUTPUT_DIR}"
 # Dataset config (from Stage 1)
 DATASET_CONFIG="${DATA_ROOT}/config/trace50_all_videos_20s.toml"
@@ -36,13 +47,9 @@ DATASET_CONFIG="${DATA_ROOT}/config/trace50_all_videos_20s.toml"
 # You should run augment_clips_with_instruments.py first to generate this
 CLIPS_WITH_INSTRUMENTS="${PROJECT_ROOT}/Lap/preprocessing/filtered_clips_with_instruments.jsonl"
 
-# Stage 1 vanilla LoRA weights (REQUIRED)
-# This is the output from your previous LoRA training
-VANILLA_LORA_WEIGHTS="/mnt/cfs/jj/proj/musubi-tuner/Lap/lora_outputs/all_videos_20s/high_noise_trace50/20s-of-lorac.safetensors"
-
 # Model checkpoints
-DIT_PATH="${PROJECT_ROOT}/outputs/merged_low_noise.safetensors"
-DIT_HIGH_NOISE_PATH="${PROJECT_ROOT}/outputs/merged_high_noise.safetensors"  # merged WAN2.2 split weights
+DIT_PATH="/mnt/cfs/jj/proj/musubi-tuner/outputs/merged_low_noise_v3.safetensors"
+DIT_HIGH_NOISE_PATH="/mnt/cfs/jj/proj/musubi-tuner/outputs/merged_high_noise_v3.safetensors"  # merged WAN2.2 split weights
 VAE_PATH="${CKPT_ROOT}/Wan2.1_VAE.pth"
 T5_PATH="${CKPT_ROOT}/models_t5_umt5-xxl-enc-bf16.pth"
 CLIP_PATH="${CKPT_ROOT}/clip-vit-large-patch14"  # Or appropriate CLIP path
@@ -57,15 +64,25 @@ echo "=== LoRA-MoE Stage 2 Training ==="
 echo "Project root: ${PROJECT_ROOT}"
 echo ""
 
-# Check vanilla LoRA weights
-if [ ! -f "${VANILLA_LORA_WEIGHTS}" ]; then
-    echo "ERROR: Vanilla LoRA weights not found: ${VANILLA_LORA_WEIGHTS}"
-    echo ""
-    echo "Please ensure Stage 1 vanilla LoRA training is complete."
-    echo "The output should be a .safetensors file with base LoRA weights."
+# Check DiT base checkpoints (v3 merged)
+if [ ! -f "${DIT_PATH}" ]; then
+    echo "ERROR: Low-noise DiT checkpoint not found: ${DIT_PATH}"
     exit 1
 fi
-echo "✓ Found vanilla LoRA weights: ${VANILLA_LORA_WEIGHTS}"
+echo "✓ Found low-noise DiT: ${DIT_PATH}"
+
+if [ ! -f "${DIT_HIGH_NOISE_PATH}" ]; then
+    echo "ERROR: High-noise DiT checkpoint not found: ${DIT_HIGH_NOISE_PATH}"
+    exit 1
+fi
+echo "✓ Found high-noise DiT: ${DIT_HIGH_NOISE_PATH}"
+
+# Check Accelerate config
+if [ ! -f "${ACCELERATE_CONFIG}" ]; then
+    echo "ERROR: Accelerate config not found: ${ACCELERATE_CONFIG}"
+    exit 1
+fi
+echo "✓ Using Accelerate config: ${ACCELERATE_CONFIG}"
 
 # Check cached data
 if [ ! -d "${CACHE_ROOT}" ]; then
@@ -106,27 +123,11 @@ echo "✓ Found instrument-augmented clips: ${CLIPS_WITH_INSTRUMENTS}"
 # Training Configuration
 # ============================================================================
 
-# LoRA-MoE hyperparameters
-NUM_EXPERTS=4
-LORA_DIM=4
-LORA_ALPHA=1.0
-TARGET_BLOCKS="last_8"
-
-# Projection-specific ranks (must match Stage 1)
-RANK_Q=8
-RANK_K=4
-RANK_V=4
-RANK_O=4
-RANK_FFN=4
-
-# Router configuration
-ROUTING_MODE="learned"
-ROUTER_HIDDEN_DIM=64
-ROUTER_TOP_K=2
-ROUTER_TEMPERATURE=0.7
+# External LoRA-MoE config file (YAML/TOML/JSON)
+LORA_MOE_CONFIG_FILE="${PROJECT_ROOT}/Lap/config/lora_moe.yaml"
 
 # Training parameters
-NUM_EPOCHS=20
+NUM_EPOCHS=24
 BATCH_SIZE=1
 GRAD_ACCUM_STEPS=8
 LEARNING_RATE=5e-5
@@ -137,12 +138,10 @@ WEIGHT_DIFFUSION=1.0
 WEIGHT_ROI=3.0
 WEIGHT_IDENTITY=0.0  # Set to 0.5 if you have instrument classifier
 WEIGHT_TEMPORAL=0.0  # Set to 0.5 if you have optical flow model
-WEIGHT_ROUTING_ENTROPY=0.02
-WEIGHT_ROUTING_LOAD_BALANCE=0.1
+WEIGHT_ROUTING_ENTROPY=0.08
+WEIGHT_ROUTING_LOAD_BALANCE=0.25
 
-# GPU configuration
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7  # Adjust to your available GPUs
-NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | tr ',' '\n' | wc -l)
+
 
 echo ""
 echo "Training Configuration:"
@@ -161,13 +160,15 @@ echo ""
 
 echo "=== Starting LoRA-MoE Training ==="
 echo "Output directory: ${OUTPUT_DIR}"
+echo "Experiment tag: ${EXP_TAG}"
 echo ""
 
-exec python -m musubi_tuner.wan_train_lora_moe \
+exec accelerate launch --config_file "${ACCELERATE_CONFIG}" -m musubi_tuner.wan_train_lora_moe \
     --sdpa \
     --task i2v-A14B \
     --training_stage stage_b \
     --output_dir "${OUTPUT_DIR}" \
+    --output_name lora-moe-stage2-${EXP_TAG} \
     --logging_dir "${OUTPUT_DIR}/logs" \
     \
     --dit "${DIT_PATH}" \
@@ -179,31 +180,10 @@ exec python -m musubi_tuner.wan_train_lora_moe \
     --dataset_config "${DATASET_CONFIG}" \
     --log_config \
     --instrument_data_path "${CLIPS_WITH_INSTRUMENTS}" \
-    \
-    # --base_lora_weights "${VANILLA_LORA_WEIGHTS}" \
-    \
-    --lora_dim ${LORA_DIM} \
-    --lora_alpha ${LORA_ALPHA} \
-    --num_experts ${NUM_EXPERTS} \
-    --target_blocks "${TARGET_BLOCKS}" \
-    \
-    --rank_q ${RANK_Q} \
-    --rank_k ${RANK_K} \
-    --rank_v ${RANK_V} \
-    --rank_o ${RANK_O} \
-    --rank_ffn ${RANK_FFN} \
-    \
-    # --network_module "networks.lora_wan" \
-    # --network_dim ${LORA_DIM} \
-    # --network_alpha ${LORA_ALPHA} \
-    \
-    --routing_mode "${ROUTING_MODE}" \
-    --router_hidden_dim ${ROUTER_HIDDEN_DIM} \
-    --router_top_k ${ROUTER_TOP_K} \
-    --router_temperature ${ROUTER_TEMPERATURE} \
     --train_router \
     --use_teacher_guidance \
-    --teacher_kl_weight 1.0 \
+    --teacher_kl_weight 0.4 \
+    --lora_moe_config_file "${LORA_MOE_CONFIG_FILE}" \
     \
     --max_train_epochs ${NUM_EPOCHS} \
     --gradient_accumulation_steps ${GRAD_ACCUM_STEPS} \
@@ -212,6 +192,11 @@ exec python -m musubi_tuner.wan_train_lora_moe \
     --lr_scheduler cosine \
     --lr_warmup_steps 100 \
     --mixed_precision bf16 \
+    --save_every_n_epochs 1 \
+    \
+    --min_timestep 875 \
+    --max_timestep 1000 \
+    --preserve_distribution_shape \
     \
     --weight_base_diffusion ${WEIGHT_DIFFUSION} \
     --weight_roi_recon ${WEIGHT_ROI} \
@@ -220,12 +205,12 @@ exec python -m musubi_tuner.wan_train_lora_moe \
     --weight_routing_entropy ${WEIGHT_ROUTING_ENTROPY} \
     --weight_routing_load_balance ${WEIGHT_ROUTING_LOAD_BALANCE} \
     \
-    --gradient_checkpointing \
+    # --gradient_checkpointing \
     --offload_inactive_dit \
     --max_grad_norm 1.0 \
-    \
-    --save_every_n_steps 500 \
     --seed 42
+    # --save_every_n_steps 10 \
+
 
 # ============================================================================
 # Training Complete
@@ -237,9 +222,9 @@ if [ $? -eq 0 ]; then
     echo "Output: ${OUTPUT_DIR}/lora_moe_final.safetensors"
     echo ""
     echo "This checkpoint contains:"
-    echo "  - Frozen base LoRA (from Stage 1)"
-    echo "  - 4 trained expert LoRAs (Scissors, Hook, Suction, Other)"
+    echo "  - 6 trained expert LoRAs (bipolar, clipper, grasper, hook, irrigator, scissors)"
     echo "  - Learned router (MLP with teacher guidance)"
+    echo "  - Base: DiT v3 merged high/low-noise checkpoints"
     echo ""
     echo "Next steps:"
     echo "  1. Run inference with different instrument hints"

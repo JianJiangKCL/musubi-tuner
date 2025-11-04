@@ -1,0 +1,33 @@
+lora_moe:
+  lora_dim: 8
+  alpha: 1.0
+  num_experts: 6
+  expert_names:
+    - bipolar
+    - clipper
+    - grasper
+    - hook
+    - irrigator
+    - scissors
+  use_base_lora: false
+  dropout: 0.0
+  rank_dropout: 0.0
+  module_dropout: 0.0
+  # target blocks to adapt: "last_8", "last_6", or explicit list like [32,33,34,35,36,37,38,39]
+  target_blocks: last_8
+  # projection-specific ranks
+  projection_ranks:
+    q: 16
+    k: 8
+    v: 8
+    o: 8
+    ffn: 8
+
+router:
+  routing_mode: learned
+  top_k: 1
+  temperature: 0.6
+  ema_beta: 0.9
+  learnable_hidden_dim: 128
+  use_text_conditioning: false
+

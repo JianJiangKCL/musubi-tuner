@@ -23,16 +23,26 @@ conda activate musu
 # Model Paths
 # ============================================================================
 
-# Base model checkpoints
-DIT_PATH="${PROJECT_ROOT}/outputs/merged_low_noise.safetensors"
-DIT_HIGH_NOISE_PATH="${PROJECT_ROOT}/outputs/merged_high_noise.safetensors"  # Optional
+# Base model checkpoints (Stage 1 LoRA already merged into DiT v3)
+DIT_PATH="${PROJECT_ROOT}/outputs/merged_low_noise_v3.safetensors"
+DIT_HIGH_NOISE_PATH="${PROJECT_ROOT}/outputs/merged_high_noise_v3.safetensors"
 VAE_PATH="${CKPT_ROOT}/Wan2.1_VAE.pth"
 T5_PATH="${CKPT_ROOT}/models_t5_umt5-xxl-enc-bf16.pth"
-CLIP_PATH="${CKPT_ROOT}/clip-vit-large-patch14"
 
 # LoRA-MoE weights (trained from stage 2)
-LORA_MOE_WEIGHTS="${PROJECT_ROOT}/outputs/lora_moe_stage2/lora_moe_final.safetensors"
-
+# Use latest from 8gpu_v3_nogc if available, else fallback to a dated run
+# if [ -z "${LORA_MOE_WEIGHTS}" ]; then
+#     MOE_DIR="/mnt/cfs/jj/proj/musubi-tuner/outputs/lora_moe_stage2/8gpu_v3_nogc"
+#     if ls ${MOE_DIR}/lora-moe-stage2-*-0*.safetensors >/dev/null 2>&1; then
+#         # Prefer numbered incremental checkpoints to avoid oversized final files
+#         LORA_MOE_WEIGHTS=$(ls -t ${MOE_DIR}/lora-moe-stage2-*-0*.safetensors | head -n1)
+#     elif ls ${MOE_DIR}/*.safetensors >/dev/null 2>&1; then
+#         LORA_MOE_WEIGHTS=$(ls -t ${MOE_DIR}/*.safetensors | head -n1)
+#     else
+#         LORA_MOE_WEIGHTS="/mnt/cfs/jj/proj/musubi-tuner/outputs/lora_moe_stage2/20251026_021123/lora-moe-stage2-20251026_021123.safetensors"
+#     fi
+# fi
+LORA_MOE_WEIGHTS="/mnt/cfs/jj/proj/musubi-tuner/outputs/lora_moe_stage2/20251028_231504/lora-moe-stage2-20251028_231504.safetensors"
 # ============================================================================
 # Generation Settings
 # ============================================================================
@@ -41,15 +51,14 @@ LORA_MOE_WEIGHTS="${PROJECT_ROOT}/outputs/lora_moe_stage2/lora_moe_final.safeten
 TASK="i2v-A14B"
 
 # Prompt (in Chinese)
-PROMPT="抓钳抓取组织。电凝钩切割血管。"
+PROMPT="电凝钩分离胆囊周围的网膜组织"
 
-# Instrument hint for expert routing
-# Options: "Scissors", "Hook/Electrocautery", "Suction", "Other"
+# Instrument hint for expert routing (must be one of: bipolar, clipper, grasper, hook, irrigator, scissors)
 # Leave empty for auto-detection from prompt
-INSTRUMENT_HINT="Hook/Electrocautery"
+INSTRUMENT_HINT="hook"
 
 # Input image (required for i2v task)
-IMAGE_PATH="${PROJECT_ROOT}/Lap/example_frames/start_frame.png"
+IMAGE_PATH="/mnt/cfs/jj/proj/musubi-tuner/Lap/clips_all_video/cholec02/first_frames/cholec02_0046_part1.jpg"
 
 # Output settings
 OUTPUT_DIR="${PROJECT_ROOT}/outputs/lora_moe_inference"
@@ -57,15 +66,12 @@ mkdir -p "${OUTPUT_DIR}"
 OUTPUT_PATH="${OUTPUT_DIR}/generated_video_$(date +%Y%m%d_%H%M%S).mp4"
 
 # Video parameters
-NUM_FRAMES=81
-VIDEO_SIZE="256 256"  # height width
-NUM_STEPS=40
-GUIDANCE_SCALE=7.5
-FLOW_SHIFT=7.0
+NUM_FRAMES=161
+VIDEO_SIZE="320 480"  # height width
+NUM_STEPS=50
 SEED=42
 
-# LoRA scaling factors
-ALPHA_BASE=0.7    # Base LoRA strength
+# LoRA scaling factors (Stage 1 base LoRA merged into DiT v3)
 ALPHA_EXPERT=1.0  # Expert LoRA strength
 
 # GPU settings
@@ -90,7 +96,7 @@ fi
 echo "✓ Found LoRA-MoE weights: ${LORA_MOE_WEIGHTS}"
 
 # Check base model files
-for path in "${DIT_PATH}" "${VAE_PATH}" "${T5_PATH}"; do
+for path in "${DIT_PATH}" "${DIT_HIGH_NOISE_PATH}" "${VAE_PATH}" "${T5_PATH}"; do
     if [ ! -f "${path}" ] && [ ! -d "${path}" ]; then
         echo "ERROR: Model file not found: ${path}"
         exit 1
@@ -118,9 +124,8 @@ echo "  Prompt: ${PROMPT}"
 echo "  Instrument: ${INSTRUMENT_HINT:-auto-detected}"
 echo "  Frames: ${NUM_FRAMES}"
 echo "  Steps: ${NUM_STEPS}"
-echo "  Guidance scale: ${GUIDANCE_SCALE}"
 echo "  Seed: ${SEED}"
-echo "  Alpha (base/expert): ${ALPHA_BASE}/${ALPHA_EXPERT}"
+echo "  Alpha (expert): ${ALPHA_EXPERT}"
 echo ""
 echo "=== Starting Video Generation ==="
 echo "Output will be saved to: ${OUTPUT_PATH}"
@@ -130,17 +135,15 @@ echo ""
 CMD="python -m musubi_tuner.wan_inference_lora_moe \
     --task ${TASK} \
     --dit \"${DIT_PATH}\" \
+    --dit_high_noise \"${DIT_HIGH_NOISE_PATH}\" \
     --vae \"${VAE_PATH}\" \
     --t5 \"${T5_PATH}\" \
-    --clip \"${CLIP_PATH}\" \
     --lora_moe_weights \"${LORA_MOE_WEIGHTS}\" \
+    --lora_moe_config_file \"${PROJECT_ROOT}/Lap/config/lora_moe.yaml\" \
     --prompt \"${PROMPT}\" \
     --num_frames ${NUM_FRAMES} \
     --video_size ${VIDEO_SIZE} \
     --num_steps ${NUM_STEPS} \
-    --guidance_scale ${GUIDANCE_SCALE} \
-    --flow_shift ${FLOW_SHIFT} \
-    --alpha_base ${ALPHA_BASE} \
     --alpha_expert ${ALPHA_EXPERT} \
     --seed ${SEED} \
     --output_path \"${OUTPUT_PATH}\""
@@ -168,7 +171,7 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "Tips:"
     echo "  - Try different instrument hints to see expert routing effects"
-    echo "  - Adjust alpha_base and alpha_expert to control LoRA strength"
+    echo "  - Adjust alpha_expert to control LoRA strength"
     echo "  - Use --seed for reproducible generation"
 else
     echo ""

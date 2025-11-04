@@ -298,9 +298,9 @@ if __name__ == "__main__":
     # prompt = "An epic, continuous camera zoom out begins, pulling back to reveal the nearby geographical features come into view, followed by the surrounding landscape stretching to the horizon. The zoom continues to accelerate, ascending through the clouds and into space, culminating in a breathtaking view of planet Earth floating silently in the cosmos."
     # wavespeed_generate(image, prompt, high_noise_lora, low_noise_lora)
      # trace 30
-    high_noise_lora = "https://liblibai-tmp-image.liblib.cloud/models/chaowei/641638d1d8614d7f9a6b36aea2d556d1/90fa4e309d984937ad90307ed7cd2d0c.safetensors"
-    low_noise_lora = "https://liblibai-tmp-image.liblib.cloud/models/chaowei/641638d1d8614d7f9a6b36aea2d556d1/90fa4e309d984937ad90307ed7cd2d0c.safetensors"
-    prompt = "Camera zooms out from a person standing on ground. Person becomes very small then invisible. View expands to show buildings, then city, then country, then continents. Final shot shows full Earth sphere in black space. Fast continuous zoom out movement from close up person to whole planet Earth."
+    high_noise_lora = "https://liblibai-tmp-image.liblib.cloud/models/chaowei/e06fb961bf0d4efeb958744fb7499aa9/dc4ec5d3a808444c831f1f67cd119b14.safetensors""
+    low_noise_lora = "https://liblibai-tmp-image.liblib.cloud/models/chaowei/e06fb961bf0d4efeb958744fb7499aa9/dc4ec5d3a808444c831f1f67cd119b14.safetensors""
+    prompt = "Exploded View Effect 物体悬浮静止，原地拆解为数个主体部件并显露内部结构；部件向四周有序/不规则外展且全程在画面内；画面稳定，背景不变。"
     # image = "https://liblibai-tmp-image.liblib.cloud/sd-images/81836526-458b-44a9-b065-1ef36f326a65.png"
     image = "https://liblibai-tmp-image.liblib.cloud/sd-images/a8de839d-2f3a-4204-a455-6b7b42572899.png"
     wavespeed_generate_high_noise_only(image, prompt, high_noise_lora)

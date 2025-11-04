@@ -6,6 +6,7 @@ Extends lora_wan.py to support Mixture of Experts for instrument-specific adapta
 import torch
 import torch.nn as nn
 from typing import List, Optional, Dict, Tuple
+import json
 import re
 
 from .lora_moe import LoRAMoEModule, InstrumentRouter, LoRAMoENetwork
@@ -59,9 +60,9 @@ class WanLoRAMoENetwork(LoRAMoENetwork):
         # Extract config
         self.lora_dim = lora_config.get("lora_dim", 4)
         self.alpha = lora_config.get("alpha", 1.0)
-        self.num_experts = lora_config.get("num_experts", 4)
+        self.num_experts = lora_config.get("num_experts", 6)
         self.expert_names = lora_config.get("expert_names", [
-            "Scissors", "Hook/Electrocautery", "Suction", "Other"
+            "bipolar", "clipper", "grasper", "hook", "irrigator", "scissors"
         ])
         self.use_base_lora = lora_config.get("use_base_lora", True)
         self.dropout = lora_config.get("dropout", 0.0)
@@ -386,18 +387,14 @@ class WanLoRAMoENetwork(LoRAMoENetwork):
         return params
 
     def save_lora_moe_weights(self, save_path: str):
-        """Save only LoRA-MoE weights (not full model)."""
-        state_dict = {}
+        """Save only LoRA-MoE weights (not full model).
 
-        # Save LoRA-MoE module weights
-        for i, module in enumerate(self.lora_moe_modules):
-            state_dict[f"lora_moe_{i}"] = module.state_dict()
-
-        # Save router weights
-        state_dict["router"] = self.router.state_dict()
-
-        # Save config
-        state_dict["config"] = {
+        If the save_path ends with .safetensors, write a flat safetensors file
+        with keys like 'lora_moe_0.<param>' and 'router.<param>', and embed
+        config as JSON metadata under key 'config'. Otherwise, save a PyTorch
+        checkpoint with nested dicts for compatibility.
+        """
+        config_dict = {
             "lora_dim": self.lora_dim,
             "alpha": self.alpha,
             "num_experts": self.num_experts,
@@ -407,30 +404,74 @@ class WanLoRAMoENetwork(LoRAMoENetwork):
             "module_ranks": self.module_ranks,
         }
 
-        torch.save(state_dict, save_path)
+        if save_path.endswith(".safetensors"):
+            from safetensors.torch import save_file as st_save_file
+
+            tensor_map: Dict[str, torch.Tensor] = {}
+            # LoRA-MoE modules
+            for i, module in enumerate(self.lora_moe_modules):
+                for k, v in module.state_dict().items():
+                    if isinstance(v, torch.Tensor):
+                        tensor_map[f"lora_moe_{i}.{k}"] = v.detach().cpu()
+            # Router
+            for k, v in self.router.state_dict().items():
+                if isinstance(v, torch.Tensor):
+                    tensor_map[f"router.{k}"] = v.detach().cpu()
+
+            metadata = {"config": json.dumps(config_dict)}
+            st_save_file(tensor_map, save_path, metadata=metadata)
+        else:
+            state_dict: Dict[str, object] = {}
+            for i, module in enumerate(self.lora_moe_modules):
+                state_dict[f"lora_moe_{i}"] = module.state_dict()
+            state_dict["router"] = self.router.state_dict()
+            state_dict["config"] = config_dict
+            torch.save(state_dict, save_path)
+
         print(f"Saved LoRA-MoE weights to {save_path}")
 
     def load_lora_moe_weights(self, load_path: str):
-        """Load LoRA-MoE weights."""
-        # Support safetensors and PyTorch 2.6+ weights_only behavior
-        if load_path.endswith(".safetensors"):
-            from safetensors.torch import load_file
-            state_dict = load_file(load_path)
-        else:
+        """Load LoRA-MoE weights.
+
+        Supports both PyTorch checkpoints (nested dict) and safetensors files
+        with flattened keys.
+        """
+        state_dict = None
+        is_safetensors = load_path.endswith(".safetensors")
+        if is_safetensors:
+            try:
+                from safetensors.torch import load_file
+                state_dict = load_file(load_path)
+            except Exception:
+                # Fallback if the file is not a valid safetensors (e.g., mistakenly saved via torch.save)
+                is_safetensors = False
+
+        if not is_safetensors:
             try:
                 state_dict = torch.load(load_path, map_location="cpu", weights_only=False)
             except TypeError:
-                # Older PyTorch without weights_only
                 state_dict = torch.load(load_path, map_location="cpu")
 
-        # Load LoRA-MoE modules
-        for i, module in enumerate(self.lora_moe_modules):
-            if f"lora_moe_{i}" in state_dict:
-                module.load_state_dict(state_dict[f"lora_moe_{i}"])
-
-        # Load router
-        if "router" in state_dict:
-            self.router.load_state_dict(state_dict["router"])
+        # Load depending on format shape
+        if isinstance(state_dict, dict) and any(k.startswith("lora_moe_0.") for k in state_dict.keys()):
+            # Flat safetensors-style keys
+            for i, module in enumerate(self.lora_moe_modules):
+                prefix = f"lora_moe_{i}."
+                sub = {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
+                if len(sub) > 0:
+                    module.load_state_dict(sub, strict=False)
+            # Router
+            router_prefix = "router."
+            router_sub = {k[len(router_prefix):]: v for k, v in state_dict.items() if k.startswith(router_prefix)}
+            if len(router_sub) > 0:
+                self.router.load_state_dict(router_sub, strict=False)
+        else:
+            # Nested dict style
+            for i, module in enumerate(self.lora_moe_modules):
+                if f"lora_moe_{i}" in state_dict:
+                    module.load_state_dict(state_dict[f"lora_moe_{i}"], strict=False)
+            if "router" in state_dict:
+                self.router.load_state_dict(state_dict["router"], strict=False)
 
         print(f"Loaded LoRA-MoE weights from {load_path}")
 
@@ -461,8 +502,8 @@ def create_wan_lora_moe(
         lora_config = {
             "lora_dim": 4,
             "alpha": 1.0,
-            "num_experts": 4,
-            "expert_names": ["Scissors", "Hook/Electrocautery", "Suction", "Other"],
+            "num_experts": 6,
+            "expert_names": ["bipolar", "clipper", "grasper", "hook", "irrigator", "scissors"],
             "use_base_lora": True,
             "dropout": 0.0,
             "rank_dropout": 0.0,

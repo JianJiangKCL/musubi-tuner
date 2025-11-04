@@ -28,9 +28,16 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # Use official WAN loader merge path to ensure identical behavior to inference
     device = torch.device("cpu")
     logger.info(f"Loading WAN DiT for task={args.task} from: {args.dit}")
     config = WAN_CONFIGS[args.task]
+
+    # Load LoRA as state dict using official filter/merge path via load_wan_model
+    logger.info(f"Preparing LoRA weights list for official merge: {args.lora_weight} (multiplier={args.lora_multiplier})")
+    lora_sd = load_file(args.lora_weight)
+
+    # Let load_wan_model merge LoRA during state load (same path used in inference)
     transformer = load_wan_model(
         config=config,
         device=device,
@@ -40,15 +47,11 @@ def main():
         loading_device="cpu",
         dit_weight_dtype=torch.bfloat16,
         fp8_scaled=False,
+        lora_weights_list=[lora_sd],
+        lora_multipliers=[args.lora_multiplier],
+        use_scaled_mm=False,
     )
     transformer.eval()
-
-    logger.info(f"Loading LoRA weights: {args.lora_weight} (multiplier={args.lora_multiplier})")
-    weights_sd = load_file(args.lora_weight)
-    network = lora.create_arch_network_from_weights(args.lora_multiplier, weights_sd, unet=transformer, for_inference=True)
-
-    logger.info("Merging LoRA weights into DiT")
-    network.merge_to(None, transformer, weights_sd, dtype=torch.bfloat16, device=device, non_blocking=True)
 
     logger.info(f"Saving merged model to: {args.save_merged_model}")
     mem_eff_save_file(transformer.state_dict(), args.save_merged_model)

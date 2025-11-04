@@ -20,6 +20,8 @@ Usage:
 
 import argparse
 import torch
+import json as _json
+import os as _os
 import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -59,6 +61,8 @@ class LoRAMoEInference:
         alpha_base: float = 0.7,
         alpha_expert: float = 1.0,
         device: str = "cuda",
+        lora_moe_config_file: Optional[str] = None,
+        timestep_boundary: float = 0.9,
     ):
         """
         Args:
@@ -78,15 +82,39 @@ class LoRAMoEInference:
         self.device = torch.device(device)
         self.alpha_base = alpha_base
         self.alpha_expert = alpha_expert
+        self.timestep_boundary = timestep_boundary
 
         # Load DiT model
         logger.info(f"Loading WAN DiT model for task: {task}")
         self.dit = load_wan_model(
-            checkpoint_path=dit_path,
             config=self.config,
             device=self.device,
-            dtype=torch.bfloat16,
+            dit_path=dit_path,
+            attn_mode="torch",
+            split_attn=False,
+            loading_device=self.device,
+            dit_weight_dtype=torch.bfloat16,
+            fp8_scaled=False,
         )
+
+        # WAN 2.2 dual-DiT support
+        self.dit_low = self.dit
+        self.dit_high = None
+        self.dit_active = self.dit_low
+        if dit_high_noise_path:
+            logger.info(f"Loading high-noise DiT model for WAN 2.2 from {dit_high_noise_path}")
+            self.dit_high = load_wan_model(
+                config=self.config,
+                device=self.device,
+                dit_path=dit_high_noise_path,
+                attn_mode="torch",
+                split_attn=False,
+                loading_device=self.device,
+                dit_weight_dtype=torch.bfloat16,
+                fp8_scaled=False,
+            )
+            # Start with high-noise model at the beginning of sampling (t near 1.0)
+            self.dit_active = self.dit_high
 
         # Load VAE
         logger.info(f"Loading VAE from {vae_path}")
@@ -103,32 +131,44 @@ class LoRAMoEInference:
 
         # Load CLIP (for i2v)
         if clip_path and "i2v" in task:
-            logger.info(f"Loading CLIP from {clip_path}")
-            self.clip = CLIPModel(
-                dtype=self.config.clip_dtype,
-                device=self.device,
-                weight_path=clip_path,
-            )
+            # allow directory input by appending expected checkpoint filename
+            if os.path.isdir(clip_path):
+                weight_path = os.path.join(clip_path, self.config.clip_checkpoint)
+            else:
+                weight_path = clip_path
+            if not os.path.exists(weight_path):
+                logger.warning(f"CLIP weights not found at {weight_path}; proceeding without CLIP.")
+                self.clip = None
+            else:
+                logger.info(f"Loading CLIP from {weight_path}")
+                self.clip = CLIPModel(
+                    dtype=self.config.clip_dtype,
+                    device=self.device,
+                    weight_path=weight_path,
+                )
         else:
             self.clip = None
 
         # Create LoRA-MoE network
         self.lora_moe_network = None
         if lora_moe_weights:
-            logger.info(f"Loading LoRA-MoE weights from {lora_moe_weights}")
-            # Load checkpoint to get config
-            checkpoint = load_file(lora_moe_weights)
+            logger.info(f"Preparing LoRA-MoE from {lora_moe_weights}")
+            checkpoint = None  # network loader will be used
 
-            # Parse config from checkpoint metadata or use defaults
+            # Base defaults, will be overrided by config yaml
             lora_config = {
                 "lora_dim": 4,
                 "alpha": 1.0,
-                "num_experts": 4,
-                "expert_names": ["Scissors", "Hook/Electrocautery", "Suction", "Other"],
-                "use_base_lora": True,
+                "num_experts": 6,
+                "expert_names": ["bipolar", "clipper", "grasper", "hook", "irrigator", "scissors"],
+                # Stage1 base LoRA merged into DiT; disable base_lora
+                "use_base_lora": False,
                 "dropout": 0.0,
                 "rank_dropout": 0.0,
                 "module_dropout": 0.0,
+                # Optional fields for inference application
+                "target_blocks": "last_8",
+                "projection_ranks": {"q": 8, "k": 4, "v": 4, "o": 4, "ffn": 4},
             }
 
             router_config = {
@@ -136,28 +176,183 @@ class LoRAMoEInference:
                 "top_k": 2,
                 "temperature": 0.7,
                 "learnable_hidden_dim": 64,
+                "input_dim": None,
             }
 
-            # Target last 8 blocks for WAN2.2 (40-layer model)
-            target_block_indices = list(range(32, 40))
+            # Discover default config file if not provided
+            if not lora_moe_config_file:
+                candidate_paths = [
+                    os.environ.get("LORA_MOE_CONFIG_FILE", None),
+                    os.path.join(os.getcwd(), "Lap", "config", "lora_moe.yaml"),
+                    "/mnt/cfs/jj/proj/musubi-tuner/Lap/config/lora_moe.yaml",
+                ]
+                for _p in candidate_paths:
+                    if _p and os.path.exists(_p):
+                        lora_moe_config_file = _p
+                        break
 
-            # Create LoRA-MoE network
-            self.lora_moe_network = WanLoRAMoENetwork(
-                model=self.dit,
-                lora_config=lora_config,
-                router_config=router_config,
-                target_block_indices=target_block_indices,
-            )
+            # Optional: override from external config file
+            if lora_moe_config_file:
+                def _load_structured_config(path: str) -> dict:
+                    ext = os.path.splitext(path)[1].lower()
+                    with open(path, "r") as f:
+                        if ext in [".yaml", ".yml"]:
+                            import yaml  # type: ignore
+                            return yaml.safe_load(f) or {}
+                        elif ext == ".toml":
+                            try:
+                                import tomllib
+                                return tomllib.loads(f.read())
+                            except Exception:
+                                import tomli  # type: ignore
+                                f.seek(0)
+                                return tomli.loads(f.read())
+                        else:
+                            import json as _json
+                            return _json.load(f)
 
-            # Apply LoRA-MoE to model
-            self.lora_moe_network.apply_lora_moe()
+                try:
+                    cfg = _load_structured_config(lora_moe_config_file)
+                    lora_cfg = cfg.get("lora_moe", {})
+                    router_cfg = cfg.get("router", {})
+                    if isinstance(lora_cfg, dict):
+                        # Allow target_blocks and projection_ranks to override
+                        lora_config.update({k: v for k, v in lora_cfg.items() if v is not None})
+                    if isinstance(router_cfg, dict):
+                        router_config.update({k: v for k, v in router_cfg.items() if v is not None})
+                    logger.info(f"Loaded LoRA-MoE inference config from {lora_moe_config_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to load LoRA-MoE inference config '{lora_moe_config_file}': {e}")
 
-            # Load weights
-            logger.info("Loading LoRA-MoE state dict")
-            self._load_lora_moe_weights(checkpoint)
+            # Optional: override from weights metadata/config (takes highest priority to avoid rank mismatch)
+            # Supports safetensors metadata['config'] (json string) or torch checkpoint with ['config']
+            try:
+                from safetensors import safe_open as _safe_open
+                try:
+                    with _safe_open(lora_moe_weights, framework="pt", device="cpu") as f:
+                        md = f.metadata()
+                        if md and "config" in md:
+                            try:
+                                cfg_from_weights = _json.loads(md["config"]) or {}
+                            except Exception:
+                                cfg_from_weights = {}
+                        else:
+                            cfg_from_weights = {}
+                except Exception:
+                    cfg_from_weights = {}
 
-            # Set alpha scales
-            self._set_lora_scales(alpha_base, alpha_expert)
+                if not cfg_from_weights:
+                    # try torch.load
+                    try:
+                        st = torch.load(lora_moe_weights, map_location="cpu")
+                        cfg_from_weights = st.get("config", {}) if isinstance(st, dict) else {}
+                    except Exception:
+                        cfg_from_weights = {}
+
+                if isinstance(cfg_from_weights, dict) and cfg_from_weights:
+                    # Only pick keys we know
+                    for k in ["lora_dim", "alpha", "num_experts", "expert_names", "projection_ranks", "target_block_indices"]:
+                        if k in cfg_from_weights and cfg_from_weights[k] is not None:
+                            if k == "target_block_indices":
+                                # translate indices back to preset if matches last_8/last_6
+                                tbi = cfg_from_weights[k]
+                                if tbi == list(range(32, 40)):
+                                    lora_config["target_blocks"] = "last_8"
+                                elif tbi == list(range(34, 40)):
+                                    lora_config["target_blocks"] = "last_6"
+                                else:
+                                    lora_config["target_blocks"] = tbi
+                            else:
+                                lora_config[k] = cfg_from_weights[k]
+                    logger.info("Applied LoRA-MoE config from weights metadata to avoid rank mismatch")
+            except Exception as e:
+                logger.warning(f"Could not read config from weights: {e}")
+
+            # Determine target blocks
+            target_blocks = lora_config.get("target_blocks", "last_8")
+            if isinstance(target_blocks, str):
+                if target_blocks == "last_8":
+                    target_block_indices = list(range(32, 40))
+                elif target_blocks == "last_6":
+                    target_block_indices = list(range(34, 40))
+                else:
+                    raise ValueError(f"Unknown target_blocks preset: {target_blocks}")
+            else:
+                target_block_indices = target_blocks
+
+            # Ensure router input dim matches current experts (no text conditioning path)
+            try:
+                router_config["input_dim"] = lora_config.get("num_experts", 6)
+            except Exception:
+                router_config["input_dim"] = 6
+
+            if True:
+                # Pass projection ranks if provided
+                projection_ranks = lora_config.get("projection_ranks", None)
+
+                if self.dit_high is not None:
+                    # Dual models: apply LoRA to both
+                    self.lora_moe_network_low = WanLoRAMoENetwork(
+                        model=self.dit_low,
+                        lora_config=lora_config,
+                        router_config=router_config,
+                        target_block_indices=target_block_indices,
+                        projection_ranks=projection_ranks,
+                    )
+                    self.lora_moe_network_low.apply_lora_moe()
+                    # Ensure router on device
+                    try:
+                        self.lora_moe_network_low.router.to(self.device)
+                    except Exception:
+                        pass
+                    # Load LoRA-MoE weights via network loader (supports safetensors/torch)
+                    try:
+                        self.lora_moe_network_low.load_lora_moe_weights(lora_moe_weights)
+                        logger.info("Loaded LoRA-MoE weights into low-noise model")
+                    except Exception as e:
+                        logger.error(f"Failed to load LoRA-MoE into low-noise model: {e}")
+
+                    self.lora_moe_network_high = WanLoRAMoENetwork(
+                        model=self.dit_high,
+                        lora_config=lora_config,
+                        router_config=router_config,
+                        target_block_indices=target_block_indices,
+                        projection_ranks=projection_ranks,
+                    )
+                    self.lora_moe_network_high.apply_lora_moe()
+                    try:
+                        self.lora_moe_network_high.router.to(self.device)
+                    except Exception:
+                        pass
+                    try:
+                        self.lora_moe_network_high.load_lora_moe_weights(lora_moe_weights)
+                        logger.info("Loaded LoRA-MoE weights into high-noise model")
+                    except Exception as e:
+                        logger.error(f"Failed to load LoRA-MoE into high-noise model: {e}")
+
+                    self.lora_moe_network = None
+                else:
+                    # Single model
+                    self.lora_moe_network = WanLoRAMoENetwork(
+                        model=self.dit,
+                        lora_config=lora_config,
+                        router_config=router_config,
+                        target_block_indices=target_block_indices,
+                        projection_ranks=projection_ranks,
+                    )
+                    self.lora_moe_network.apply_lora_moe()
+                    try:
+                        self.lora_moe_network.router.to(self.device)
+                    except Exception:
+                        pass
+                    try:
+                        self.lora_moe_network.load_lora_moe_weights(lora_moe_weights)
+                        logger.info("Loaded LoRA-MoE weights into model")
+                    except Exception as e:
+                        logger.error(f"Failed to load LoRA-MoE weights: {e}")
+                    self._set_lora_scales(alpha_base, alpha_expert)
+            else:
+                self.lora_moe_network = None
         else:
             logger.warning("No LoRA-MoE weights provided, using base model")
 
@@ -204,10 +399,12 @@ class LoRAMoEInference:
         """
         # Simple keyword matching for surgical instruments
         instrument_keywords = {
-            "Scissors": ["剪刀", "剪切"],
-            "Hook/Electrocautery": ["电凝钩", "双极电凝", "电凝", "钩"],
-            "Suction": ["吸引", "吸"],
-            "Other": ["抓钳", "戳卡", "镊子"],
+            "bipolar": ["双极电凝钳", "双极电凝", "双极", "电凝钳"],
+            "clipper": ["钛夹钳", "夹钳", "夹闭", "夹"],
+            "grasper": ["抓钳", "抓取", "镊子"],
+            "hook": ["电凝钩", "电凝", "钩"],
+            "irrigator": ["吸引器", "吸引", "吸"],
+            "scissors": ["剪刀", "剪切"],
         }
 
         # Count matches
@@ -221,8 +418,8 @@ class LoRAMoEInference:
         max_inst = max(scores.items(), key=lambda x: x[1])
 
         if max_inst[1] == 0:
-            # No match, use Other
-            return "Other"
+            # No match, default to grasper
+            return "grasper"
 
         return max_inst[0]
 
@@ -243,7 +440,9 @@ class LoRAMoEInference:
         Returns:
             logits: [num_experts] tensor
         """
-        expert_names = ["Scissors", "Hook/Electrocautery", "Suction", "Other"]
+        expert_names = self.lora_moe_network.expert_names if self.lora_moe_network is not None else [
+            "bipolar", "clipper", "grasper", "hook", "irrigator", "scissors"
+        ]
 
         # Determine instrument
         if instrument_hint is not None:
@@ -251,14 +450,14 @@ class LoRAMoEInference:
         elif prompt is not None:
             instrument = self.infer_instrument_from_prompt(prompt)
         else:
-            # Default to Other
-            instrument = "Other"
+            # Default to grasper
+            instrument = "grasper"
 
         # Find expert index
         if instrument in expert_names:
             expert_idx = expert_names.index(instrument)
         else:
-            expert_idx = expert_names.index("Other")
+            expert_idx = expert_names.index("grasper")
 
         # Create logits (peaked at predicted expert)
         logits = torch.ones(len(expert_names)) * (1 - confidence) / (len(expert_names) - 1)
@@ -319,9 +518,19 @@ class LoRAMoEInference:
             prompt=prompt,
         )
 
-        # Set routing gates
+        # Set routing gates on available networks
         if self.lora_moe_network is not None:
             self.lora_moe_network.set_routing_gates(
+                instrument_logits=instrument_logits.unsqueeze(0),
+                text_embeddings=None,
+            )
+        if hasattr(self, "lora_moe_network_low") and self.lora_moe_network_low is not None:
+            self.lora_moe_network_low.set_routing_gates(
+                instrument_logits=instrument_logits.unsqueeze(0),
+                text_embeddings=None,
+            )
+        if hasattr(self, "lora_moe_network_high") and self.lora_moe_network_high is not None:
+            self.lora_moe_network_high.set_routing_gates(
                 instrument_logits=instrument_logits.unsqueeze(0),
                 text_embeddings=None,
             )
@@ -338,24 +547,41 @@ class LoRAMoEInference:
         lat_w = width // self.config.vae_stride[2]
         latent_shape = (1, 16, lat_f, lat_h, lat_w)
 
-        # Handle image conditioning for i2v
+        # Handle image conditioning for i2v (prepare y and optional clip_fea)
+        clip_fea = None
+        y = None
         if "i2v" in self.task and image_path:
             logger.info(f"Loading start image from {image_path}")
             from PIL import Image
             import torchvision.transforms.functional as TF
 
-            image = Image.open(image_path).convert("RGB")
-            image = image.resize((width, height))
-            image_tensor = TF.to_tensor(image).unsqueeze(0).to(self.device) * 2 - 1
+            pil_image = Image.open(image_path).convert("RGB")
+            pil_image = pil_image.resize((width, height))
+            # [-1, 1] normalized tensor, CHW
+            img_tensor = TF.to_tensor(pil_image).to(self.device).sub_(0.5).div_(0.5)
+            # CFHW
+            img_cf = img_tensor.unsqueeze(1)
 
-            # Encode image with CLIP
+            # encode image to latent space with VAE, padding frames-1 with zeros
+            padding_frames = num_frames - 1
+            if padding_frames > 0:
+                pad_zeros = torch.zeros(3, padding_frames, height, width, device=self.device, dtype=img_cf.dtype)
+                img_cf = torch.cat([img_cf, pad_zeros], dim=1)
+
             with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-                clip_embedding = self.clip.encode_image(image_tensor)
+                y_latent = self.vae.encode([img_cf])[0]
 
-            # Add clip embedding to context
-            # This is task-specific, adjust based on your model architecture
-            context = torch.cat([context, clip_embedding], dim=1)
-            context_null = torch.cat([context_null, torch.zeros_like(clip_embedding)], dim=1)
+            # mask channels (4) + image latent (16) => total 36 channels expected by model
+            msk = torch.zeros(4, lat_f, lat_h, lat_w, device=self.device, dtype=y_latent.dtype)
+            msk[:, 0] = 1
+            y = torch.cat([msk, y_latent], dim=0)
+
+            # Optional CLIP image features
+            if self.clip is not None:
+                with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                    clip_fea = self.clip.visual([img_tensor.unsqueeze(1)])
+            else:
+                logger.warning("CLIP weights not provided; proceeding without CLIP image conditioning.")
 
         # Initialize noise
         logger.info("Initializing noise...")
@@ -375,29 +601,40 @@ class LoRAMoEInference:
 
         for i, t in enumerate(timesteps):
             # Set timestep for LoRA-MoE (normalized to [0, 1])
+            timestep_normalized = 1.0 - (i / len(timesteps))
             if self.lora_moe_network is not None:
-                timestep_normalized = 1.0 - (i / len(timesteps))
                 self.lora_moe_network.set_timestep(timestep_normalized)
+            if hasattr(self, "lora_moe_network_low") and self.lora_moe_network_low is not None:
+                self.lora_moe_network_low.set_timestep(timestep_normalized)
+            if hasattr(self, "lora_moe_network_high") and self.lora_moe_network_high is not None:
+                self.lora_moe_network_high.set_timestep(timestep_normalized)
 
-            # Expand latents for CFG
-            latent_model_input = torch.cat([latents, latents], dim=0)
+            # Switch active DiT based on timestep for WAN 2.2 dual models
+            if self.dit_high is not None and self.dit_low is not None:
+                use_high = timestep_normalized >= self.timestep_boundary
+                desired = self.dit_high if use_high else self.dit_low
+                if self.dit_active is not desired:
+                    self.dit_active = desired
 
             # Prepare model inputs
-            arg_c = {"context": context, "seq_len": seq_len}
-            arg_null = {"context": context_null, "seq_len": seq_len}
+            arg_c = {"context": context, "seq_len": seq_len, "y": [y] if y is not None else None, "clip_fea": clip_fea}
+            arg_null = {"context": context_null, "seq_len": seq_len, "y": [y] if y is not None else None, "clip_fea": clip_fea}
 
             # Model prediction with CFG
             with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                # Prepare latent for model: list of [C, F, H, W]
+                latent_for_model = latents.squeeze(0)  # [16, F, H, W]
                 # Conditional prediction
-                noise_pred_cond = self.dit(latents, timestep=t.unsqueeze(0), **arg_c)
+                noise_pred_cond = self.dit_active([latent_for_model], t=t.unsqueeze(0), **arg_c)[0]
                 # Unconditional prediction
-                noise_pred_uncond = self.dit(latents, timestep=t.unsqueeze(0), **arg_null)
+                noise_pred_uncond = self.dit_active([latent_for_model], t=t.unsqueeze(0), **arg_null)[0]
 
             # Classifier-free guidance
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
 
             # Scheduler step
-            latents = scheduler.step(noise_pred, t, latents).prev_sample
+            # Scheduler expects batch dimension
+            latents = scheduler.step(noise_pred.unsqueeze(0), t, latents).prev_sample
 
             if (i + 1) % 10 == 0:
                 logger.info(f"Denoising step {i+1}/{len(timesteps)}")
@@ -405,7 +642,8 @@ class LoRAMoEInference:
         # Decode latents to video
         logger.info("Decoding latents to video...")
         with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-            video = self.vae.decode(latents)
+            video_list = self.vae.decode(latents)
+            video = video_list[0]
 
         # Convert to numpy [F, H, W, C]
         video = video.squeeze(0).permute(1, 2, 3, 0).cpu().float().numpy()
@@ -465,12 +703,14 @@ Example usage:
                       help="Scaling factor for base LoRA (default: 0.7)")
     parser.add_argument("--alpha_expert", type=float, default=1.0,
                       help="Scaling factor for expert LoRAs (default: 1.0)")
+    parser.add_argument("--lora_moe_config_file", type=str, default=None,
+                      help="Path to LoRA-MoE config file (YAML/TOML/JSON) for inference")
 
     # Generation config
     parser.add_argument("--prompt", type=str, required=True,
                       help="Text prompt (in Chinese)")
     parser.add_argument("--instrument_hint", type=str, default=None,
-                      choices=["Scissors", "Hook/Electrocautery", "Suction", "Other"],
+                      choices=["bipolar", "clipper", "grasper", "hook", "irrigator", "scissors"],
                       help="Explicit instrument hint for expert routing (optional)")
     parser.add_argument("--image_path", type=str, default=None,
                       help="Path to start image for i2v (required for i2v tasks)")
@@ -500,6 +740,13 @@ Example usage:
 
 def main():
     """Main inference entry point."""
+    # Workaround for cusolver internal error: prefer MAGMA backend where available
+    try:
+        import torch.backends.cuda
+        torch.backends.cuda.preferred_linalg_library("magma")
+        _os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    except Exception:
+        pass
     parser = setup_parser()
     args = parser.parse_args()
 
@@ -516,6 +763,7 @@ def main():
         alpha_base=args.alpha_base,
         alpha_expert=args.alpha_expert,
         device=args.device,
+        lora_moe_config_file=args.lora_moe_config_file,
     )
 
     # Generate

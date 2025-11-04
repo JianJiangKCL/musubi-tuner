@@ -1,0 +1,457 @@
+_wandb:
+    value:
+        cli_version: 0.22.2
+        e:
+            vfe8pdgazd2kjj2z1nncfvdq2szb15qh:
+                args:
+                    - --sdpa
+                    - --task
+                    - i2v-A14B
+                    - --training_stage
+                    - stage_b
+                    - --output_dir
+                    - /mnt/cfs/jj/proj/musubi-tuner/outputs/lora_moe_stage2/20251028_164717
+                    - --output_name
+                    - lora-moe-stage2-20251028_164717
+                    - --logging_dir
+                    - /mnt/cfs/jj/proj/musubi-tuner/outputs/lora_moe_stage2/20251028_164717/logs
+                    - --dit
+                    - /mnt/cfs/jj/proj/musubi-tuner/outputs/merged_low_noise_v3.safetensors
+                    - --dit_high_noise
+                    - /mnt/cfs/jj/proj/musubi-tuner/outputs/merged_high_noise_v3.safetensors
+                    - --vae
+                    - /mnt/cfs/jj/ckpt/Wan2.2-I2V-A14B/Wan2.1_VAE.pth
+                    - --t5
+                    - /mnt/cfs/jj/ckpt/Wan2.2-I2V-A14B/models_t5_umt5-xxl-enc-bf16.pth
+                    - --clip
+                    - /mnt/cfs/jj/ckpt/Wan2.2-I2V-A14B/clip-vit-large-patch14
+                    - --dataset_config
+                    - /mnt/cfs/jj/proj/musubi-tuner/Lap/config/trace50_all_videos_20s.toml
+                    - --log_config
+                    - --instrument_data_path
+                    - /mnt/cfs/jj/proj/musubi-tuner/Lap/preprocessing/filtered_clips_with_instruments.jsonl
+                    - --train_router
+                    - --use_teacher_guidance
+                    - --teacher_kl_weight
+                    - "1.0"
+                    - --lora_moe_config_file
+                    - /mnt/cfs/jj/proj/musubi-tuner/Lap/config/lora_moe.yaml
+                    - --max_train_epochs
+                    - "20"
+                    - --gradient_accumulation_steps
+                    - "8"
+                    - --learning_rate
+                    - "5e-5"
+                    - --optimizer_type
+                    - AdamW
+                    - --lr_scheduler
+                    - cosine
+                    - --lr_warmup_steps
+                    - "100"
+                    - --mixed_precision
+                    - bf16
+                    - --save_every_n_epochs
+                    - "1"
+                    - --min_timestep
+                    - "875"
+                    - --max_timestep
+                    - "1000"
+                    - --preserve_distribution_shape
+                    - --weight_base_diffusion
+                    - "1.0"
+                    - --weight_roi_recon
+                    - "3.0"
+                    - --weight_identity
+                    - "0.0"
+                    - --weight_temporal
+                    - "0.0"
+                    - --weight_routing_entropy
+                    - "0.02"
+                    - --weight_routing_load_balance
+                    - "0.1"
+                    - --gradient_checkpointing
+                    - --offload_inactive_dit
+                    - --max_grad_norm
+                    - "1.0"
+                    - --seed
+                    - "42"
+                cpu_count: 86
+                cpu_count_logical: 172
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "105553760256"
+                        used: "75037044736"
+                email: k1896871@kcl.ac.uk
+                executable: /data1/miniconda3/envs/musu/bin/python3.12
+                git:
+                    commit: f49167a218c07ee5b49afe2bbdc7cccbb9ed321c
+                    remote: https://github.com/JianJiangKCL/musubi-tuner.git
+                gpu: NVIDIA H800
+                gpu_count: 8
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H800
+                      uuid: GPU-d1ea8c3d-eedc-6806-cdfc-98a5b716d706
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H800
+                      uuid: GPU-f370b0df-6954-fa05-70a5-284344c9ecaa
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H800
+                      uuid: GPU-12e3c90b-0fca-ee65-0c01-bdb2744111fa
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H800
+                      uuid: GPU-1b4e9534-6a5c-c1ea-813d-214d8cc328d1
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H800
+                      uuid: GPU-a4ff59bd-4fb8-175d-6212-48cd02831c33
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H800
+                      uuid: GPU-4e91c3d3-01a0-05ba-47ae-532732e93ec5
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H800
+                      uuid: GPU-6c41a94b-9dcf-18f1-acea-5e910877ee55
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H800
+                      uuid: GPU-e059e317-90c1-d796-f164-50cc0653f422
+                host: VM-4-98-tencentos
+                memory:
+                    total: "2016482402304"
+                os: Linux-5.4.119-19.0009.28-x86_64-with-glibc2.17
+                program: -m musubi_tuner.wan_train_lora_moe
+                python: CPython 3.12.0
+                root: /mnt/cfs/jj/proj/musubi-tuner/outputs/lora_moe_stage2/20251028_164717/logs/20251028164731
+                startedAt: "2025-10-28T08:48:59.610524Z"
+                writerId: vfe8pdgazd2kjj2z1nncfvdq2szb15qh
+        m: []
+        python_version: 3.12.0
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 71
+                - 83
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 71
+                - 83
+            "3":
+                - 61
+            "4": 3.12.0
+            "5": 0.22.2
+            "6": 4.54.1
+            "12": 0.22.2
+            "13": linux-x86_64
+async_upload:
+    value: false
+base_lora_weights:
+    value: null
+base_weights_multiplier:
+    value: null
+blocks_to_swap:
+    value: null
+clip:
+    value: /mnt/cfs/jj/ckpt/Wan2.2-I2V-A14B/clip-vit-large-patch14
+config_file:
+    value: null
+dataset_config:
+    value: /mnt/cfs/jj/proj/musubi-tuner/Lap/config/trace50_all_videos_20s.toml
+ddp_gradient_as_bucket_view:
+    value: false
+ddp_static_graph:
+    value: false
+ddp_timeout:
+    value: null
+dim_from_weights:
+    value: false
+discrete_flow_shift:
+    value: 1
+dit_dtype:
+    value: bfloat16
+dit_high_noise:
+    value: /mnt/cfs/jj/proj/musubi-tuner/outputs/merged_high_noise_v3.safetensors
+dynamo_backend:
+    value: "NO"
+dynamo_dynamic:
+    value: false
+dynamo_fullgraph:
+    value: false
+dynamo_mode:
+    value: null
+expert_names:
+    value: null
+flash_attn:
+    value: false
+flash3:
+    value: false
+fp8_base:
+    value: false
+fp8_scaled:
+    value: false
+fp8_t5:
+    value: false
+full_bf16:
+    value: false
+full_fp16:
+    value: false
+gradient_accumulation_steps:
+    value: 8
+gradient_checkpointing:
+    value: true
+guidance_scale:
+    value: 1
+huggingface_path_in_repo:
+    value: null
+huggingface_repo_id:
+    value: null
+huggingface_repo_type:
+    value: null
+huggingface_repo_visibility:
+    value: null
+img_in_txt_in_offloading:
+    value: false
+instrument_data_path:
+    value: /mnt/cfs/jj/proj/musubi-tuner/Lap/preprocessing/filtered_clips_with_instruments.jsonl
+learning_rate:
+    value: 5e-05
+log_config:
+    value: true
+log_prefix:
+    value: null
+log_tracker_config:
+    value: null
+log_tracker_name:
+    value: null
+log_with:
+    value: wandb
+logit_mean:
+    value: 0
+logit_std:
+    value: 1
+lora_alpha:
+    value: 1
+lora_dim:
+    value: 4
+lora_dropout:
+    value: 0
+lora_module_dropout:
+    value: 0
+lora_moe_config_file:
+    value: /mnt/cfs/jj/proj/musubi-tuner/Lap/config/lora_moe.yaml
+lora_moe_weights:
+    value: null
+lora_rank_dropout:
+    value: 0
+lr_decay_steps:
+    value: 0
+lr_scheduler:
+    value: cosine
+lr_scheduler_args:
+    value: null
+lr_scheduler_min_lr_ratio:
+    value: null
+lr_scheduler_num_cycles:
+    value: 1
+lr_scheduler_power:
+    value: 1
+lr_scheduler_timescale:
+    value: null
+lr_scheduler_type:
+    value: ""
+lr_warmup_steps:
+    value: 100
+max_data_loader_n_workers:
+    value: 8
+max_grad_norm:
+    value: 1
+max_timestep:
+    value: 1000
+max_train_epochs:
+    value: 20
+max_train_steps:
+    value: 60
+metadata_author:
+    value: null
+metadata_description:
+    value: null
+metadata_license:
+    value: null
+metadata_tags:
+    value: null
+metadata_title:
+    value: null
+min_timestep:
+    value: 875
+mixed_precision:
+    value: bf16
+mode_scale:
+    value: 1.29
+network_alpha:
+    value: 1
+network_args:
+    value: null
+network_dim:
+    value: null
+network_dropout:
+    value: null
+network_module:
+    value: null
+no_metadata:
+    value: false
+num_experts:
+    value: 6
+num_timestep_buckets:
+    value: null
+offload_inactive_dit:
+    value: true
+one_frame:
+    value: false
+optimizer_args:
+    value: null
+optimizer_type:
+    value: AdamW
+output_name:
+    value: lora-moe-stage2-20251028_164717
+persistent_data_loader_workers:
+    value: false
+preserve_distribution_shape:
+    value: true
+rank_ffn:
+    value: 4
+rank_k:
+    value: 4
+rank_o:
+    value: 4
+rank_q:
+    value: 8
+rank_v:
+    value: 4
+resume:
+    value: null
+resume_from_huggingface:
+    value: false
+router_ema_beta:
+    value: 0.9
+router_hidden_dim:
+    value: 64
+router_input_dim:
+    value: 512
+router_temperature:
+    value: 0.7
+router_top_k:
+    value: 2
+routing_mode:
+    value: learned
+sage_attn:
+    value: false
+sample_at_first:
+    value: false
+sample_every_n_epochs:
+    value: null
+sample_every_n_steps:
+    value: null
+sample_prompts:
+    value: null
+save_every_n_epochs:
+    value: 1
+save_every_n_steps:
+    value: null
+save_last_n_epochs:
+    value: null
+save_last_n_epochs_state:
+    value: null
+save_last_n_steps:
+    value: null
+save_last_n_steps_state:
+    value: null
+save_state:
+    value: false
+save_state_on_train_end:
+    value: false
+save_state_to_huggingface:
+    value: false
+scale_weight_norms:
+    value: null
+sdpa:
+    value: true
+seed:
+    value: 42
+show_timesteps:
+    value: null
+sigmoid_scale:
+    value: 1
+split_attn:
+    value: false
+t5:
+    value: /mnt/cfs/jj/ckpt/Wan2.2-I2V-A14B/models_t5_umt5-xxl-enc-bf16.pth
+target_blocks:
+    value: last_8
+task:
+    value: i2v-A14B
+teacher_kl_weight:
+    value: 1
+timestep_boundary:
+    value: null
+timestep_sampling:
+    value: sigma
+train_router:
+    value: true
+training_comment:
+    value: null
+training_stage:
+    value: stage_b
+use_base_lora:
+    value: true
+use_identity_loss:
+    value: false
+use_roi_loss:
+    value: true
+use_teacher_guidance:
+    value: true
+use_temporal_loss:
+    value: false
+use_text_conditioning:
+    value: false
+vae_cache_cpu:
+    value: false
+vae_dtype:
+    value: bfloat16
+wandb_run_name:
+    value: null
+weight_base_diffusion:
+    value: 1
+weight_identity:
+    value: 0
+weight_roi_recon:
+    value: 3
+weight_routing_entropy:
+    value: 0.02
+weight_routing_load_balance:
+    value: 0.1
+weight_temporal:
+    value: 0
+weighting_scheme:
+    value: none
+xformers:
+    value: false

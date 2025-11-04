@@ -89,7 +89,8 @@ def get_step_ckpt_name(model_name, step_no: int):
 
 
 def get_last_ckpt_name(model_name):
-    return model_name + ".safetensors"
+    # Handle None gracefully to avoid TypeError at train end
+    return (model_name if model_name is not None else "model") + ".safetensors"
 
 
 def get_remove_epoch_no(args: argparse.Namespace, epoch_no: int):

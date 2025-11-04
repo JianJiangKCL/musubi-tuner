@@ -2119,7 +2119,15 @@ class NetworkTrainer:
 
             metadata_to_save.update(sai_metadata)
 
-            unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+            # If LoRA-MoE is active, save ONLY LoRA-MoE weights using the main ckpt filename.
+            try:
+                if hasattr(self, "lora_moe_network") and self.lora_moe_network is not None:
+                    self.lora_moe_network.save_lora_moe_weights(ckpt_file)
+                else:
+                    # Fallback: save base network weights (if any)
+                    unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+            except Exception as e:
+                logger.warning(f"Failed to save checkpoint: {e}")
             if args.huggingface_repo_id is not None:
                 huggingface_utils.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
 

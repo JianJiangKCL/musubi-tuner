@@ -40,7 +40,7 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
         self.training_stage = getattr(args, "training_stage", "stage_a")
         logger.info(f"LoRA-MoE Training Stage: {self.training_stage}")
 
-        # LoRA-MoE config
+        # LoRA-MoE config (initial from CLI/defaults)
         self.lora_moe_config = {
             "lora_dim": getattr(args, "lora_dim", 4),
             "alpha": getattr(args, "lora_alpha", 1.0),
@@ -52,7 +52,7 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
             "module_dropout": getattr(args, "lora_module_dropout", 0.0),
         }
 
-        # Router config
+        # Router config (initial from CLI/defaults)
         self.router_config = {
             "routing_mode": getattr(args, "routing_mode", "learned"),  # Default to learned for stage_b
             "top_k": getattr(args, "router_top_k", 2),
@@ -62,6 +62,59 @@ class WanLoRAMoETrainer(WanNetworkTrainer):
             "input_dim": getattr(args, "router_input_dim", 512),
             "use_text_conditioning": getattr(args, "use_text_conditioning", False),
         }
+
+        # Optionally load overrides from external LoRA-MoE config file
+        config_file_path = getattr(args, "lora_moe_config_file", None)
+        if config_file_path:
+            def _load_structured_config(path: str) -> dict:
+                ext = os.path.splitext(path)[1].lower()
+                with open(path, "r") as f:
+                    if ext in [".yaml", ".yml"]:
+                        try:
+                            import yaml  # type: ignore
+                        except Exception as e:
+                            raise RuntimeError(f"PyYAML is required to load {path}: {e}")
+                        return yaml.safe_load(f) or {}
+                    elif ext == ".toml":
+                        try:
+                            import tomllib  # Py3.11+
+                            return tomllib.loads(f.read())
+                        except Exception:
+                            try:
+                                import tomli  # type: ignore
+                                f.seek(0)
+                                return tomli.loads(f.read())
+                            except Exception as e:
+                                raise RuntimeError(f"tomllib/tomli is required to load {path}: {e}")
+                    else:
+                        # Fallback to JSON
+                        import json as _json
+                        return _json.load(f)
+
+            try:
+                cfg = _load_structured_config(config_file_path)
+                lora_cfg = cfg.get("lora_moe", {})
+                router_cfg = cfg.get("router", {})
+
+                # Apply file overrides (file has priority over CLI for these sections)
+                if isinstance(lora_cfg, dict):
+                    # Extract target_blocks / projection_ranks if present
+                    target_blocks_from_file = lora_cfg.pop("target_blocks", None)
+                    projection_ranks_from_file = lora_cfg.pop("projection_ranks", None)
+                    self.lora_moe_config.update({k: v for k, v in lora_cfg.items() if v is not None})
+                    if target_blocks_from_file is not None:
+                        self.target_blocks = target_blocks_from_file
+                    if isinstance(projection_ranks_from_file, dict):
+                        self.projection_ranks.update({k: v for k, v in projection_ranks_from_file.items() if v is not None})
+                if isinstance(router_cfg, dict):
+                    self.router_config.update({k: v for k, v in router_cfg.items() if v is not None})
+
+                logger.info(
+                    f"Loaded LoRA-MoE config from {config_file_path}: "
+                    f"experts={self.lora_moe_config.get('num_experts')} names={self.lora_moe_config.get('expert_names')}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load LoRA-MoE config file '{config_file_path}': {e}. Using CLI/defaults.")
 
         # If we only use instrument logits (num_experts) as input, align router input dim to num_experts to avoid matmul shape mismatch
         if not self.router_config["use_text_conditioning"]:
@@ -553,14 +606,18 @@ def setup_parser() -> argparse.ArgumentParser:
     # LoRA config
     parser.add_argument("--lora_dim", type=int, default=4, help="Base LoRA rank")
     parser.add_argument("--lora_alpha", type=float, default=1.0, help="LoRA alpha scaling")
-    parser.add_argument("--num_experts", type=int, default=4, help="Number of expert LoRAs")
+    parser.add_argument("--num_experts", type=int, default=6, help="Number of expert LoRAs")
     parser.add_argument("--expert_names", type=str, nargs="+", default=None,
-                      help="Expert names (default: Scissors, Hook/Electrocautery, Suction, Other)")
+                      help="Expert names (default: bipolar, clipper, grasper, hook, irrigator, scissors)")
     parser.add_argument("--use_base_lora", action="store_true", default=True,
                       help="Use base LoRA (shared adaptation)")
     parser.add_argument("--lora_dropout", type=float, default=0.0, help="LoRA dropout")
     parser.add_argument("--lora_rank_dropout", type=float, default=0.0, help="LoRA rank dropout")
     parser.add_argument("--lora_module_dropout", type=float, default=0.0, help="LoRA module dropout")
+
+    # External LoRA-MoE config file
+    parser.add_argument("--lora_moe_config_file", type=str, default=None,
+                      help="Path to LoRA-MoE config file (YAML/TOML/JSON). If provided, overrides LoRA-MoE/router CLI options.")
 
     # Projection-specific ranks
     parser.add_argument("--rank_q", type=int, default=8, help="Rank for Q projection")
